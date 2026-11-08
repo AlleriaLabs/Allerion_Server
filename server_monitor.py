@@ -925,7 +925,7 @@ def network_topology(inventory):
                     "No device links were inferred.")
     return {
         "nodes": sorted(nodes, key=lambda x: tuple(int(p) for p in x.get("ip", "").split("."))
-                        if re.fullmatch(r"\\d{1,3}(?:\\.\\d{1,3}){3}", x.get("ip", "")) else ()),
+                        if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", x.get("ip", "")) else ()),
         "links": links,
         "gateway": gateway,
         "interface": interface,
