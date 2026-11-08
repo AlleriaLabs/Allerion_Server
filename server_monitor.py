@@ -506,9 +506,37 @@ def collector():
         evaluate_server_alerts(dict(stats))
 
 
-def _ookla_cli():
+selected_speed_server_id = None
+
+
+def list_ookla_servers():
+    """Return nearby servers from the official Ookla CLI without running a test."""
+    proc = subprocess.run(["speedtest", "--accept-license", "--accept-gdpr", "--servers"],
+                          capture_output=True, text=True, timeout=30)
+    output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    if proc.returncode != 0:
+        raise RuntimeError((output.strip() or "Ookla server listing failed")[:200])
+    servers = []
+    for line in output.splitlines():
+        match = re.match(r"^\s*(\d+)\)\s*(.*?)\s+\((.*?)\)\s+\[([0-9.]+)\s*km\]\s*$", line)
+        if match:
+            servers.append({"id": match.group(1), "name": match.group(2).strip(),
+                            "location": match.group(3).strip(), "distance_km": float(match.group(4))})
+            continue
+        match = re.match(r"^\s*(\d+)\)\s*(.*?)\s*$", line)
+        if match and match.group(2).strip() and not match.group(2).strip().lower().startswith(("closest", "id ")):
+            servers.append({"id": match.group(1), "name": match.group(2).strip(),
+                            "location": "", "distance_km": None})
+    unique = {item["id"]: item for item in servers}
+    return {"servers": list(unique.values())[:100]}
+
+
+def _ookla_cli(server_id=None):
     """Official Ookla Speedtest CLI. Streams its JSON lines so the app can show real progress."""
-    p = subprocess.Popen(["speedtest", "--accept-license", "--accept-gdpr", "-f", "jsonl"],
+    args = ["speedtest", "--accept-license", "--accept-gdpr", "-f", "jsonl"]
+    if server_id is not None:
+        args.extend(["--server-id", str(int(server_id))])
+    p = subprocess.Popen(args,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     timer = threading.Timer(180, p.kill)
     timer.start()
@@ -559,20 +587,29 @@ def _cf_down():
     return got * 8 / (time.time() - t) / 1e6, None, None, "Cloudflare (download only)"
 
 
-def run_speedtest():
+def run_speedtest(server_id=None):
+    global selected_speed_server_id
+    if server_id is not None:
+        try:
+            selected_speed_server_id = str(int(server_id))
+        except (TypeError, ValueError):
+            speed.update(running=False, error="Invalid Ookla server ID")
+            return
+    chosen_server = selected_speed_server_id
     if not _speed_lock.acquire(blocking=False):
         return
     speed.update(running=True, error=None, phase="ping", progress=0.0)
     try:
         errs = []
-        for fn in (_ookla_cli, _ookla_py, _cf_down):
+        runners = [lambda: _ookla_cli(chosen_server)] if chosen_server else [_ookla_cli, _ookla_py, _cf_down]
+        for runner in runners:
             try:
-                d, u, p, srv = fn()
+                d, u, p, srv = runner()
                 speed.update(down_mbps=round(d, 1), up_mbps=None if u is None else round(u, 1),
                              ping_ms=None if p is None else round(p, 1), server=srv, error=None)
                 break
             except Exception as e:
-                errs.append("%s: %s" % (fn.__name__.strip("_"), str(e) or e.__class__.__name__))
+                errs.append("Ookla: %s" % (str(e) or e.__class__.__name__))
         else:
             speed.update(down_mbps=None, up_mbps=None, ping_ms=None, error=" | ".join(errs)[:200])
     finally:
@@ -1200,7 +1237,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send(401, '{"error":"unauthorized"}', "application/json")
             return
         try:
-            if u.path == "/api/stats":
+            if u.path == "/api/speedtest/servers":
+                payload = list_ookla_servers()
+            elif u.path == "/api/stats":
                 payload = stats
             elif u.path == "/api/history":
                 payload = HIST.get(parse_qs(u.query).get("range", ["1h"])[0])
@@ -1274,7 +1313,11 @@ class Handler(BaseHTTPRequestHandler):
                 saved = False
             self.send(200, json.dumps({"ok": True, "saved": saved}), "application/json")
         elif u.path == "/api/speedtest":
-            threading.Thread(target=run_speedtest, daemon=True).start()
+            server_id = body.get("server_id")
+            if server_id is not None and not re.fullmatch(r"\d{1,10}", str(server_id)):
+                self.send(400, json.dumps({"ok": False, "error": "Invalid Ookla server ID"}), "application/json")
+                return
+            threading.Thread(target=run_speedtest, args=(server_id,), daemon=True).start()
             self.send(200, '{"ok":true}', "application/json")
         elif u.path == "/api/power/test":
             cand = {**CONFIG, **body}
