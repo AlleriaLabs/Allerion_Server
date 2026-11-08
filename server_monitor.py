@@ -824,14 +824,13 @@ def lan_inventory():
         proc = subprocess.run(["ip", "neigh", "show"], capture_output=True, text=True, timeout=2)
         for line in proc.stdout.splitlines():
             cols = line.split()
-            if len(cols) < 2 or not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", cols[0]):
+            if len(cols) < 2 or not re.fullmatch(r"\\d{1,3}(?:\\.\\d{1,3}){3}", cols[0]):
                 continue
             ip = cols[0]
             mac = cols[cols.index("lladdr")+1].lower() if "lladdr" in cols and cols.index("lladdr")+1 < len(cols) else ""
             iface = cols[cols.index("dev")+1] if "dev" in cols and cols.index("dev")+1 < len(cols) else ""
             state = cols[-1]
             previous = found.get(ip, {})
-            # Prefer the interface reported by ip neigh; ARP can be stale.
             found[ip] = {
                 "ip": ip,
                 "mac": mac or previous.get("mac", ""),
@@ -841,12 +840,43 @@ def lan_inventory():
             }
     except (OSError, subprocess.TimeoutExpired):
         pass
+
+    # Bridge forwarding database is passive L2 evidence. It may expose MACs
+    # without an IP; keep those as diagnostics rather than inventing devices.
+    bridge_macs = {}
+    try:
+        proc = subprocess.run(["bridge", "fdb", "show"], capture_output=True, text=True, timeout=2)
+        for line in proc.stdout.splitlines():
+            cols = line.split()
+            if not cols or not re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", cols[0]):
+                continue
+            mac = cols[0].lower()
+            if mac.startswith(("01:", "33:")) or mac == "00:00:00:00:00:00":
+                continue
+            iface = cols[cols.index("dev")+1] if "dev" in cols and cols.index("dev")+1 < len(cols) else ""
+            entry = bridge_macs.setdefault(mac, {"mac": mac, "interfaces": []})
+            if iface and iface not in entry["interfaces"]:
+                entry["interfaces"].append(iface)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    for item in found.values():
+        observations = bridge_macs.get(item.get("mac", ""))
+        if observations:
+            item["bridge_seen"] = True
+            item["bridge_interfaces"] = observations["interfaces"]
+
+    known_ips = {item.get("ip") for item in found.values()}
+    known_macs = {item.get("mac") for item in found.values() if item.get("mac")}
+    unmapped_macs = [entry for mac, entry in bridge_macs.items() if mac not in known_macs]
     return {
         "items": sorted(found.values(), key=lambda x: tuple(int(p) for p in x["ip"].split("."))),
         "count": len(found),
         "mode": "passive-neighbor-cache",
+        "bridge_mac_count": len(bridge_macs),
+        "unmapped_macs": unmapped_macs[:100],
+        "note": "Bridge MAC observations have no IP mapping in the current neighbor cache; they are not counted as IP devices.",
     }
-
 
 def network_topology(inventory):
     """Infer same-subnet gateway associations from the active IPv4 route.
@@ -945,6 +975,8 @@ def network_topology(inventory):
                         continue
                 except ValueError:
                     continue
+                item["topology_status"] = "linked"
+                item["topology_reason"] = "MAC address present in the passive neighbor cache and IP is inside the active subnet."
                 links.append({
                     "source": gateway,
                     "target": ip,
@@ -965,7 +997,26 @@ def network_topology(inventory):
                 "could not be verified; no device links were inferred."
             ) % (gateway, interface or "unknown interface")
 
+    linked_ips = {link["target"] for link in links}
+    for item in nodes:
+        if item.get("ip") == gateway:
+            item["topology_status"] = "gateway"
+            item["topology_reason"] = "Active IPv4 default route."
+        elif item.get("ip") not in linked_ips:
+            if not item.get("mac"):
+                item["topology_status"] = "unmapped"
+                item["topology_reason"] = "No MAC address in the passive ARP / neighbor cache."
+            elif not network:
+                item["topology_status"] = "unmapped"
+                item["topology_reason"] = "Active IPv4 subnet could not be determined."
+            else:
+                item["topology_status"] = "unmapped"
+                item["topology_reason"] = "Device IP is outside the active interface subnet."
+    bridge_data = inventory.get("unmapped_macs", [])
     return {
+        "unmapped_macs": bridge_data,
+        "bridge_mac_count": inventory.get("bridge_mac_count", 0),
+        "unmapped_node_count": sum(1 for item in nodes if item.get("topology_status") == "unmapped"),
         "nodes": sorted(nodes, key=lambda x: tuple(int(p) for p in x.get("ip", "").split("."))
                         if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", x.get("ip", "")) else ()),
         "links": links,
