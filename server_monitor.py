@@ -497,7 +497,8 @@ def collector():
             "ip": local_ip(),
             "procs": procs,
             "power": power,
-        })        dk = stats["disks"]
+        })
+        dk = stats["disks"]
         dtot = sum(x["total_gb"] for x in dk)
         HIST.add({"t": now, "cpu": stats["cpu"], "ram": vm.percent, "temp": stats["temp"], "down": down * 8, "up": up * 8,
                   "power": power["watts"], "gpu": stats["gpu"],
@@ -588,7 +589,7 @@ def _cf_down():
 
 def run_speedtest(server_id=None):
     global selected_speed_server_id
-    # Always pin manual and app-triggered tests to Smart Baguio.
+    # Always pin tests to Smart Baguio, ignoring any client-supplied server ID.
     selected_speed_server_id = DEFAULT_OOKLA_SERVER_ID
     chosen_server = DEFAULT_OOKLA_SERVER_ID
     if not _speed_lock.acquire(blocking=False):
@@ -932,7 +933,8 @@ def network_topology(inventory):
                 gateway = cols[cols.index("via") + 1]
             if "dev" in cols and cols.index("dev") + 1 < len(cols):
                 interface = cols[cols.index("dev") + 1]
-            if "src" in cols and cols.index("src") + 1 < len(cols):                source_ip = cols[cols.index("src") + 1]
+            if "src" in cols and cols.index("src") + 1 < len(cols):
+                source_ip = cols[cols.index("src") + 1]
             if gateway:
                 break
     except (OSError, subprocess.TimeoutExpired):
