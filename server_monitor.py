@@ -509,27 +509,87 @@ def collector():
 selected_speed_server_id = None
 
 
-def list_ookla_servers():
-    """Return nearby servers from the official Ookla CLI without running a test."""
-    proc = subprocess.run(["speedtest", "--accept-license", "--accept-gdpr", "--servers"],
-                          capture_output=True, text=True, timeout=30)
-    output = (proc.stdout or "") + "\n" + (proc.stderr or "")
-    if proc.returncode != 0:
-        raise RuntimeError((output.strip() or "Ookla server listing failed")[:200])
-    servers = []
-    for line in output.splitlines():
-        match = re.match(r"^\s*(\d+)\)\s*(.*?)\s+\((.*?)\)\s+\[([0-9.]+)\s*km\]\s*$", line)
-        if match:
-            servers.append({"id": match.group(1), "name": match.group(2).strip(),
-                            "location": match.group(3).strip(), "distance_km": float(match.group(4))})
-            continue
-        match = re.match(r"^\s*(\d+)\)\s*(.*?)\s*$", line)
-        if match and match.group(2).strip() and not match.group(2).strip().lower().startswith(("closest", "id ")):
-            servers.append({"id": match.group(1), "name": match.group(2).strip(),
-                            "location": "", "distance_km": None})
-    unique = {item["id"]: item for item in servers}
-    return {"servers": list(unique.values())[:100]}
+OOKLA_SERVERS_FILE = os.path.join(DATA_DIR, "ookla_servers.json")
+_OOKLA_SERVERS_LOCK = threading.Lock()
+_OOKLA_SERVERS_CACHE = {"servers": [], "fetched_at": 0, "last_attempt_at": 0}
+OOKLA_SERVERS_TTL = 6 * 60 * 60
+OOKLA_SERVERS_RETRY = 60 * 60
 
+
+def list_ookla_servers():
+    """Return a persisted nearby-server cache; contact Ookla at most once per TTL."""
+    with _OOKLA_SERVERS_LOCK:
+        now = time.time()
+        if not _OOKLA_SERVERS_CACHE["servers"]:
+            try:
+                with open(OOKLA_SERVERS_FILE, encoding="utf-8") as handle:
+                    saved = json.load(handle)
+                _OOKLA_SERVERS_CACHE.update({
+                    "servers": saved.get("servers", []),
+                    "fetched_at": float(saved.get("fetched_at", 0)),
+                    "last_attempt_at": float(saved.get("last_attempt_at", 0)),
+                })
+            except (OSError, ValueError, TypeError):
+                pass
+
+        servers = _OOKLA_SERVERS_CACHE["servers"]
+        fetched_at = _OOKLA_SERVERS_CACHE["fetched_at"]
+        last_attempt = _OOKLA_SERVERS_CACHE["last_attempt_at"]
+
+        if servers and now - fetched_at < OOKLA_SERVERS_TTL:
+            return {"servers": servers, "cached": True, "stale": False}
+
+        if now - last_attempt < OOKLA_SERVERS_RETRY:
+            return {
+                "servers": servers,
+                "cached": bool(servers),
+                "stale": bool(servers),
+                "error": "Ookla discovery is rate-limited; showing the last saved server list." if servers
+                         else "Ookla discovery is rate-limited. Enter an Ookla server ID manually.",
+            }
+
+        _OOKLA_SERVERS_CACHE["last_attempt_at"] = now
+        try:
+            proc = subprocess.run(
+                ["speedtest", "--accept-license", "--accept-gdpr", "--servers"],
+                capture_output=True, text=True, timeout=30
+            )
+            output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            if proc.returncode != 0:
+                raise RuntimeError((output.strip() or "Ookla server listing failed")[:200])
+
+            found = []
+            for line in output.splitlines():
+                match = re.match(r"^\s*(\d+)\)\s*(.*?)\s+\((.*?)\)\s+\[([0-9.]+)\s*km\]\s*$", line)
+                if match:
+                    found.append({"id": match.group(1), "name": match.group(2).strip(),
+                                  "location": match.group(3).strip(), "distance_km": float(match.group(4))})
+                    continue
+                match = re.match(r"^\s*(\d+)\)\s*(.*?)\s*$", line)
+                if match and match.group(2).strip() and not match.group(2).strip().lower().startswith(("closest", "id ")):
+                    found.append({"id": match.group(1), "name": match.group(2).strip(),
+                                  "location": "", "distance_km": None})
+            unique = list({item["id"]: item for item in found}.values())[:100]
+            if not unique:
+                raise RuntimeError("Ookla returned no parseable server entries")
+
+            _OOKLA_SERVERS_CACHE.update(servers=unique, fetched_at=now, last_attempt_at=now)
+            os.makedirs(DATA_DIR, exist_ok=True)
+            write_private_json(OOKLA_SERVERS_FILE, _OOKLA_SERVERS_CACHE)
+            return {"servers": unique, "cached": False, "stale": False}
+        except Exception as exc:
+            _OOKLA_SERVERS_CACHE["last_attempt_at"] = now
+            try:
+                os.makedirs(DATA_DIR, exist_ok=True)
+                write_private_json(OOKLA_SERVERS_FILE, _OOKLA_SERVERS_CACHE)
+            except OSError:
+                pass
+            return {
+                "servers": servers,
+                "cached": bool(servers),
+                "stale": bool(servers),
+                "error": (str(exc) or exc.__class__.__name__)[:200],
+            }
 
 def _ookla_cli(server_id=None):
     """Official Ookla Speedtest CLI. Streams its JSON lines so the app can show real progress."""
@@ -1351,7 +1411,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     threading.Thread(target=collector, daemon=True).start()
-    threading.Thread(target=speed_loop, daemon=True).start()
+    # Automatic speed tests remain disabled; manual tests are available in the app.
     try:
         ip = socket.gethostbyname(socket.gethostname())
     except OSError:
