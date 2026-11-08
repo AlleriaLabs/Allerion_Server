@@ -43,15 +43,44 @@ _speed_lock = threading.Lock()
 
 
 def cpu_temp():
+    """Return the hottest available host temperature in Celsius.
+
+    Prefer psutil's hardware sensor support, then fall back to Linux sysfs.
+    The Docker deployment bind-mounts the host root at /hostfs, so host
+    thermal-zone and hwmon readings may be visible there even when the
+    container's own /sys namespace has no sensors.
+    """
+    values = []
     try:
         sensors = psutil.sensors_temperatures()
-    except AttributeError:
-        return None
-    for key in ("coretemp", "k10temp", "zenpower", "cpu_thermal", "cpu-thermal", "acpitz"):
-        if key in sensors and sensors[key]:
-            return round(max(s.current for s in sensors[key]), 1)
-    allv = [s.current for v in sensors.values() for s in v]
-    return round(max(allv), 1) if allv else None
+        for group in sensors.values():
+            for sensor in group:
+                current = getattr(sensor, "current", None)
+                if isinstance(current, (int, float)) and -50 <= current <= 200:
+                    values.append(float(current))
+    except (AttributeError, OSError, RuntimeError):
+        pass
+
+    # Linux thermal zones and hwmon inputs report millidegrees Celsius.
+    # Check both container-visible and host-mounted sysfs locations.
+    patterns = (
+        "/sys/class/thermal/thermal_zone*/temp",
+        "/sys/class/hwmon/hwmon*/temp*_input",
+        "/hostfs/sys/class/thermal/thermal_zone*/temp",
+        "/hostfs/sys/class/hwmon/hwmon*/temp*_input",
+    )
+    for pattern in patterns:
+        for path in glob.glob(pattern):
+            try:
+                with open(path, encoding="ascii") as handle:
+                    raw = float(handle.read().strip())
+                current = raw / 1000.0 if abs(raw) > 1000 else raw
+                if -50 <= current <= 200:
+                    values.append(current)
+            except (OSError, ValueError):
+                continue
+
+    return round(max(values), 1) if values else None
 
 
 def ping_ms():
