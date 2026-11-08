@@ -827,13 +827,112 @@ def lan_inventory():
             if len(cols) >= 4 and cols[0] not in ("default",):
                 ip = cols[0]
                 mac = cols[cols.index("lladdr")+1].lower() if "lladdr" in cols and cols.index("lladdr")+1 < len(cols) else ""
+                iface = cols[cols.index("dev")+1] if "dev" in cols and cols.index("dev")+1 < len(cols) else ""
                 state = cols[-1]
-                found.setdefault(ip, {"ip": ip, "mac": mac, "state": state, "source": "neighbor cache"})
+                found.setdefault(ip, {"ip": ip, "mac": mac, "interface": iface, "state": state, "source": "neighbor cache"})
     except (OSError, subprocess.TimeoutExpired):
         pass
     return {"items": sorted(found.values(), key=lambda x: tuple(int(p) for p in x["ip"].split("."))
                             if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", x["ip"]) else ()),
             "count": len(found), "mode": "passive-neighbor-cache"}
+
+
+def network_topology(inventory):
+    """Build conservative logical gateway paths from the active IPv4 default route.
+
+    These are inferred L2/L3 relationships, not verified switch-port or cable links.
+    Only neighbors on the gateway interface's directly connected subnet are included.
+    """
+    gateway = None
+    interface = None
+    try:
+        route = subprocess.run(["ip", "-4", "route", "show", "default"],
+                               capture_output=True, text=True, timeout=2)
+        for line in route.stdout.splitlines():
+            cols = line.split()
+            if not cols or cols[0] != "default":
+                continue
+            if "via" in cols and cols.index("via") + 1 < len(cols):
+                gateway = cols[cols.index("via") + 1]
+            if "dev" in cols and cols.index("dev") + 1 < len(cols):
+                interface = cols[cols.index("dev") + 1]
+            if gateway and interface:
+                break
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    # Fall back to Linux's route table when the ip utility is unavailable.
+    if not gateway or not interface:
+        try:
+            with open("/proc/net/route", encoding="ascii") as handle:
+                next(handle, None)
+                for line in handle:
+                    cols = line.split()
+                    if len(cols) >= 8 and cols[1] == "00000000" and (int(cols[3], 16) & 1):
+                        gateway = socket.inet_ntoa(bytes.fromhex(cols[2])[::-1])
+                        interface = cols[0]
+                        break
+        except (OSError, ValueError):
+            pass
+
+    network = None
+    if interface:
+        try:
+            for addr in psutil.net_if_addrs().get(interface, []):
+                if addr.family == socket.AF_INET and addr.address and addr.netmask:
+                    candidate = ipaddress.ip_interface("%s/%s" % (addr.address, addr.netmask)).network
+                    if gateway and ipaddress.ip_address(gateway) in candidate:
+                        network = candidate
+                        break
+        except (ValueError, OSError):
+            network = None
+
+    nodes = [dict(item) for item in inventory.get("items", [])]
+    links = []
+    note = "No usable IPv4 default gateway and interface were detected; only passive neighbor inventory is available."
+    if gateway and interface:
+        gateway_node = next((item for item in nodes if item.get("ip") == gateway), None)
+        if gateway_node is None:
+            gateway_node = {"ip": gateway, "mac": "", "interface": interface,
+                            "state": "gateway", "source": "default route",
+                            "role": "gateway", "inferred": True}
+            nodes.append(gateway_node)
+        else:
+            gateway_node["role"] = "gateway"
+
+        if network:
+            for item in nodes:
+                ip = item.get("ip", "")
+                if ip == gateway or item.get("interface") != interface or not item.get("mac"):
+                    continue
+                try:
+                    if ipaddress.ip_address(ip) not in network:
+                        continue
+                except ValueError:
+                    continue
+                links.append({
+                    "source": gateway,
+                    "target": ip,
+                    "type": "logical_gateway_path",
+                    "label": "Same LAN / default gateway",
+                    "confidence": "medium",
+                    "verified": False,
+                })
+            note = ("Logical gateway paths are inferred from the active default route and directly connected subnet. "
+                    "They do not represent verified physical cables, switch ports, or device-to-device traffic.")
+        else:
+            note = ("Default gateway detected, but its directly connected subnet could not be verified. "
+                    "No device links were inferred.")
+    return {
+        "nodes": sorted(nodes, key=lambda x: tuple(int(p) for p in x.get("ip", "").split("."))
+                        if re.fullmatch(r"\\d{1,3}(?:\\.\\d{1,3}){3}", x.get("ip", "")) else ()),
+        "links": links,
+        "gateway": gateway,
+        "interface": interface,
+        "mode": "inferred-gateway-paths",
+        "link_count": len(links),
+        "note": note,
+    }
 
 
 def network_diagnostics(target):
@@ -1034,9 +1133,7 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/network/devices":
                 payload = lan_inventory()
             elif u.path == "/api/network/topology":
-                inventory = lan_inventory()
-                payload = {"nodes": inventory["items"], "links": [],
-                           "note": "Passive neighbor inventory only; physical links are not inferred."}
+                payload = network_topology(lan_inventory())
             elif u.path == "/api/network/diagnostics":
                 target = parse_qs(u.query).get("target", [""])[0]
                 payload = network_diagnostics(target)
