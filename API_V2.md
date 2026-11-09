@@ -13,7 +13,8 @@ All `/api/*` routes require the `X-Token` header. Query-string tokens are delibe
 
 ## LAN
 - `GET /api/network/devices` — passive ARP / neighbor-cache inventory. Disabled unless `ENABLE_LAN_DISCOVERY=1`.
-- `GET /api/network/topology` — passive inventory nodes; links are intentionally empty because an ARP table cannot prove physical topology.
+- `GET /api/network/topology` — passive neighbor inventory with inferred same-subnet gateway associations; these are logical links, not verified physical paths.
+- `GET /api/network/traffic` — live IP packet metadata observed on the monitoring server's selected Linux interface (packet counts, peer IPs and byte rates). Requires `ENABLE_LAN_DISCOVERY=1`, Linux `AF_PACKET`, and Docker `NET_RAW` capability. Packet payloads are never read or returned. It cannot see switched traffic that does not reach the monitoring server's interface; full LAN-wide visibility requires a mirrored switch port or gateway capture.
 - `GET /api/network/diagnostics?target=192.168.1.10` — TCP connect checks on ports 443, 80, 22 and 8080. Only private IPv4 addresses are accepted. Packet loss is not claimed or inferred.
 
 ## Energy
@@ -31,7 +32,7 @@ All `/api/*` routes require the `X-Token` header. Query-string tokens are delibe
 1. Copy `.env.example` to `.env`, set `TOKEN` to a long random value, and keep `.env` private.
 2. Build and start using `docker compose up -d --build`.
 3. The Docker socket is exposed only through `tecnativa/docker-socket-proxy`, bound to host loopback, with `POST=0` and container API access enabled. Do not publish port 2375 to the LAN or internet.
-4. LAN discovery reads the host's neighbor cache only. It does not perform active subnet scanning.
+4. LAN discovery reads the host's neighbor cache only. It does not perform active subnet scanning. Live packet metadata capture is separately exposed by `/api/network/traffic`; Docker Compose grants only `NET_RAW`, and packet payloads are not collected.
 5. Service checks are admin-configured URLs. Only configure trusted local endpoints.
 6. Put the service behind HTTPS if accessed outside a trusted LAN. The API token is a bearer credential; do not expose plain HTTP to the public internet.
 
