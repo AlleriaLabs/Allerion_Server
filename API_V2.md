@@ -7,7 +7,7 @@ All `/api/*` routes require the `X-Token` header. Query-string tokens are delibe
 
 ## Host inventory
 - `GET /api/processes?limit=30` — bounded process list (PID, name, username, CPU %, resident memory bytes). Command-line arguments and environment variables are never returned.
-- `GET /api/stats` includes `disks[]`, discovered from the host mount table. Each physical block-backed mounted filesystem reports mount path, device, parent disk, filesystem, used/total/free capacity, usage percentage, and removable/USB metadata. Duplicate bind mounts and container pseudo-filesystems are excluded.
+- `GET /api/stats` includes `disks[]`, discovered from the host mount table and sysfs block inventory. Mounted filesystems report mount path, device, parent disk/model, filesystem, used/total/free capacity, usage percentage, and removable/USB metadata. Connected physical disks without a mounted filesystem are also reported with `mounted=false` and detected raw capacity. Duplicate bind mounts, virtual block devices, and container pseudo-filesystems are excluded.
 - `GET /api/containers` — Docker container list, requires the read-only Docker socket proxy.
 - `GET /api/containers/{id}/stats` — point-in-time CPU and memory usage.
 - `GET /api/services` — configured checks from `SERVICE_CHECKS`, formatted `name=https://host/health;name2=http://host/health`.
