@@ -669,10 +669,11 @@ def collector():
             "power": power,
         })
         dk = stats["disks"]
-        dtot = sum(x["total_gb"] for x in dk)
+        mounted_disks = [x for x in dk if x.get("mounted", True)]
+        dtot = sum(x["total_gb"] for x in mounted_disks)
         HIST.add({"t": now, "cpu": stats["cpu"], "ram": vm.percent, "temp": stats["temp"], "down": down * 8, "up": up * 8,
                   "power": power["watts"], "gpu": stats["gpu"],
-                  "disk": (sum(x["used_gb"] for x in dk) / dtot * 100) if dtot else None})
+                  "disk": (sum(x["used_gb"] for x in mounted_disks) / dtot * 100) if dtot else None})
         evaluate_server_alerts(dict(stats))
 
 
@@ -1489,7 +1490,7 @@ def evaluate_server_alerts(snapshot):
         ("cpu", snapshot.get("cpu"), ALERT_THRESHOLDS["cpu"]),
         ("ram", snapshot.get("ram"), ALERT_THRESHOLDS["ram"]),
         ("temp", snapshot.get("temp"), ALERT_THRESHOLDS["temp"]),
-        ("disk", max([float(x.get("pct", 0)) for x in snapshot.get("disks", [])] or [0]), ALERT_THRESHOLDS["disk"]),
+        ("disk", max([float(x.get("pct") or 0) for x in snapshot.get("disks", []) if x.get("mounted", True)] or [0]), ALERT_THRESHOLDS["disk"]),
     ]
     for metric, raw_value, threshold in metrics:
         if raw_value is None:
