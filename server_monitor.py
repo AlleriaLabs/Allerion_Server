@@ -225,7 +225,7 @@ def disks():
     mounted_names = set()
     for line in _host_mountinfo():
         try:
-            left, right = line.rstrip("\\n").split(" - ", 1)
+            left, right = line.rstrip("\n").split(" - ", 1)
             fields = left.split()
             tail = right.split()
             if len(fields) < 5 or len(tail) < 2:
