@@ -714,6 +714,7 @@ def api_capabilities():
             "network_inventory": ENABLE_LAN_DISCOVERY,
             "network_diagnostics": True,
             "network_topology": ENABLE_LAN_DISCOVERY,
+            "network_traffic": ENABLE_LAN_DISCOVERY and platform.system() == "Linux",
             "energy_breakdown": True,
             "energy_forecast": bool(METER and len(METER.hist) >= 3),
             "webhooks": bool(ALERT_WEBHOOK_URL),
@@ -1062,6 +1063,153 @@ def network_topology(inventory):
         "note": note,
     }
 
+
+# --- Live packet metadata collector (Linux AF_PACKET; payloads are never read) ---
+_traffic_lock = threading.Lock()
+_traffic_events = deque(maxlen=4096)
+_traffic_state = {
+    "status": "stopped", "interface": None, "source_ip": None,
+    "error": None, "packet_count": 0, "last_packet_at": None,
+    "last_packet_peer": None, "last_src": None, "last_dst": None,
+    "last_direction": None, "thread": None, "retry_at": 0.0,
+}
+
+
+def _traffic_capture_worker(interface, source_ip):
+    try:
+        capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+        capture.bind((interface, 0))
+        capture.settimeout(1.0)
+        with _traffic_lock:
+            _traffic_state.update(status="active", interface=interface,
+                                  source_ip=source_ip, error=None)
+        while True:
+            try:
+                frame, address = capture.recvfrom(65535)
+            except socket.timeout:
+                continue
+            if len(frame) < 14:
+                continue
+            ethertype = int.from_bytes(frame[12:14], "big")
+            offset = 14
+            while ethertype in (0x8100, 0x88A8, 0x9100):
+                if len(frame) < offset + 4:
+                    break
+                ethertype = int.from_bytes(frame[offset + 2:offset + 4], "big")
+                offset += 4
+            else:
+                src = dst = None
+                if ethertype == 0x0800 and len(frame) >= offset + 20:
+                    ihl = (frame[offset] & 0x0F) * 4
+                    if ihl < 20 or len(frame) < offset + ihl:
+                        continue
+                    src = str(ipaddress.ip_address(frame[offset + 12:offset + 16]))
+                    dst = str(ipaddress.ip_address(frame[offset + 16:offset + 20]))
+                elif ethertype == 0x86DD and len(frame) >= offset + 40:
+                    src = str(ipaddress.ip_address(frame[offset + 8:offset + 24]))
+                    dst = str(ipaddress.ip_address(frame[offset + 24:offset + 40]))
+                else:
+                    continue
+
+                # PACKET_OUTGOING is 4 on Linux. Other frames are received.
+                packet_type = address[2] if isinstance(address, tuple) and len(address) > 2 else 0
+                direction = "tx" if packet_type == 4 else "rx"
+                peer = dst if direction == "tx" else src
+                if not peer or peer == source_ip:
+                    continue
+                now = time.time()
+                with _traffic_lock:
+                    _traffic_events.append((now, peer, direction, len(frame), src, dst))
+                    _traffic_state.update(
+                        packet_count=_traffic_state["packet_count"] + 1,
+                        last_packet_at=now, last_packet_peer=peer,
+                        last_src=src, last_dst=dst, last_direction=direction
+                    )
+    except Exception as exc:
+        with _traffic_lock:
+            _traffic_state.update(status="unavailable",
+                                  error=(str(exc) or exc.__class__.__name__)[:180],
+                                  retry_at=time.monotonic() + 30.0,
+                                  thread=None)
+
+
+def _ensure_network_traffic_capture():
+    if not ENABLE_LAN_DISCOVERY:
+        return
+    with _traffic_lock:
+        current = _traffic_state.get("thread")
+        if current is not None and current.is_alive():
+            return
+        if time.monotonic() < _traffic_state.get("retry_at", 0.0):
+            return
+    try:
+        topology = network_topology(lan_inventory())
+        interface = topology.get("interface")
+        source_ip = topology.get("source_ip")
+        if not interface:
+            with _traffic_lock:
+                _traffic_state.update(status="unavailable",
+                                      error="No active network interface was detected.",
+                                      retry_at=time.monotonic() + 30.0)
+            return
+        worker = threading.Thread(target=_traffic_capture_worker,
+                                  args=(interface, source_ip), daemon=True,
+                                  name="allerion-packet-capture")
+        with _traffic_lock:
+            _traffic_state.update(status="starting", interface=interface,
+                                  source_ip=source_ip, error=None, thread=worker)
+        worker.start()
+    except Exception as exc:
+        with _traffic_lock:
+            _traffic_state.update(status="unavailable",
+                                  error=(str(exc) or exc.__class__.__name__)[:180],
+                                  retry_at=time.monotonic() + 30.0, thread=None)
+
+
+def network_traffic_snapshot():
+    if not ENABLE_LAN_DISCOVERY:
+        raise PermissionError("Live network traffic requires ENABLE_LAN_DISCOVERY=1.")
+    if platform.system() != "Linux" or not hasattr(socket, "AF_PACKET"):
+        return {"available": False, "status": "unsupported",
+                "error": "Live packet capture requires Linux AF_PACKET support."}
+    _ensure_network_traffic_capture()
+    now = time.time()
+    with _traffic_lock:
+        state = dict(_traffic_state)
+        events = [event for event in _traffic_events if now - event[0] <= 3.0]
+    peers = {}
+    rx_bytes = tx_bytes = 0
+    for at, peer, direction, size, src, dst in events:
+        row = peers.setdefault(peer, {"ip": peer, "packets": 0,
+                                      "rx_bytes": 0, "tx_bytes": 0,
+                                      "last_seen": at})
+        row["packets"] += 1
+        row[direction + "_bytes"] += size
+        row["last_seen"] = max(row["last_seen"], at)
+        if direction == "rx":
+            rx_bytes += size
+        else:
+            tx_bytes += size
+    return {
+        "available": state.get("status") == "active",
+        "status": state.get("status"),
+        "interface": state.get("interface"),
+        "error": state.get("error"),
+        "packet_count": state.get("packet_count", 0),
+        "last_packet_age_ms": int(max(0, now - state["last_packet_at"]) * 1000)
+                              if state.get("last_packet_at") else None,
+        "active_peer": state.get("last_packet_peer"),
+        "last_src": state.get("last_src"),
+        "last_dst": state.get("last_dst"),
+        "last_direction": state.get("last_direction"),
+        "rx_bytes_per_sec": round(rx_bytes / 3.0, 1),
+        "tx_bytes_per_sec": round(tx_bytes / 3.0, 1),
+        "recent_peers": sorted(peers.values(),
+                               key=lambda item: item["last_seen"], reverse=True)[:40],
+        "scope": "IP packets visible on the monitoring server's selected network interface; switched traffic not delivered to this interface cannot be observed.",
+    }
+
+
 def network_diagnostics(target):
     try:
         addr = ipaddress.ip_address(target)
@@ -1263,6 +1411,8 @@ class Handler(BaseHTTPRequestHandler):
                 payload = lan_inventory()
             elif u.path == "/api/network/topology":
                 payload = network_topology(lan_inventory())
+            elif u.path == "/api/network/traffic":
+                payload = network_traffic_snapshot()
             elif u.path == "/api/network/diagnostics":
                 target = parse_qs(u.query).get("target", [""])[0]
                 payload = network_diagnostics(target)
