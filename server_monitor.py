@@ -92,25 +92,122 @@ def ping_ms():
         return None
 
 
-DISK_PATHS = os.environ.get("DISK_PATHS", "")  # e.g. "/hostfs:System,/hostfs/DATA:Data"
+# Storage discovery reads the HOST mount table, not the container's overlay mounts.
+# The Docker deployment bind-mounts / at /hostfs with rslave propagation.
+_HOST_ROOT = "/hostfs"
+_PSEUDO_FILESYSTEMS = {
+    "autofs", "binfmt_misc", "bpf", "cgroup", "cgroup2", "configfs",
+    "debugfs", "devpts", "devtmpfs", "efivarfs", "fusectl", "hugetlbfs",
+    "mqueue", "nsfs", "overlay", "proc", "pstore", "ramfs", "securityfs",
+    " squashfs", "sysfs", "tmpfs", "tracefs",
+}
+
+
+def _unescape_mount_field(value):
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), value)
+
+
+def _host_mountinfo():
+    # PID 1 is the host init process because Compose uses pid: host.
+    for mount_table in ("/hostfs/proc/1/mountinfo", "/proc/1/mountinfo", "/proc/self/mountinfo"):
+        try:
+            with open(mount_table, encoding="utf-8") as handle:
+                return handle.readlines()
+        except OSError:
+            continue
+    return []
+
+
+def _host_disk_identity(major_minor, source):
+    sys_link = os.path.join("/hostfs/sys/dev/block", major_minor)
+    try:
+        sys_path = os.path.realpath(sys_link)
+        if not os.path.exists(sys_link):
+            raise OSError("sysfs block device unavailable")
+        name = os.path.basename(sys_path)
+        if os.path.exists(os.path.join(sys_path, "partition")):
+            name = os.path.basename(os.path.dirname(sys_path))
+        removable = False
+        removable_file = os.path.join("/hostfs/sys/class/block", os.path.basename(sys_path), "removable")
+        try:
+            with open(removable_file, encoding="ascii") as handle:
+                removable = handle.read().strip() == "1"
+        except OSError:
+            pass
+        usb = "/usb" in sys_path.lower()
+        return name, sys_path, removable or usb, "USB" if usb else "Internal"
+    except OSError:
+        return source, "", False, "Unknown"
 
 
 def disks():
-    if DISK_PATHS:
-        items = []
-        for part in DISK_PATHS.split(","):
-            path, _, label = part.partition(":")
-            items.append((path.strip(), label.strip() or path.strip()))
-    else:
-        items = [(p.mountpoint, p.mountpoint) for p in psutil.disk_partitions()]
     out = []
-    for path, label in items:
+    seen = set()
+    for line in _host_mountinfo():
         try:
-            u = psutil.disk_usage(path)
-            out.append({"mount": label, "pct": u.percent,
-                        "used_gb": round(u.used / 1e9, 1), "total_gb": round(u.total / 1e9, 1)})
-        except OSError:
-            pass
+            left, right = line.rstrip("\n").split(" - ", 1)
+            fields = left.split()
+            tail = right.split()
+            if len(fields) < 5 or len(tail) < 2:
+                continue
+            major_minor = fields[2]
+            mountpoint = _unescape_mount_field(fields[4])
+            filesystem = tail[0]
+            source = _unescape_mount_field(tail[1])
+            # Only real block-backed filesystems belong in physical storage totals.
+            if filesystem in _PSEUDO_FILESYSTEMS or not source.startswith("/dev/"):
+                continue
+            identity = (major_minor, _unescape_mount_field(fields[3]))
+            if identity in seen:
+                continue
+            host_path = os.path.normpath(os.path.join(_HOST_ROOT, mountpoint.lstrip("/")))
+            if not os.path.exists(host_path):
+                continue
+            # Ignore host mount-table entries whose submount was not propagated into
+            # the container; otherwise disk_usage would report the parent filesystem.
+            if mountpoint != "/" and not os.path.ismount(host_path):
+                continue
+            usage = psutil.disk_usage(host_path)
+            disk_name, sys_path, removable, connection = _host_disk_identity(major_minor, source)
+            seen.add(identity)
+            out.append({
+                "id": major_minor,
+                "mount": mountpoint,
+                "pct": usage.percent,
+                "used_gb": round(usage.used / 1e9, 1),
+                "total_gb": round(usage.total / 1e9, 1),
+                "free_gb": round(usage.free / 1e9, 1),
+                "device": source,
+                "disk": disk_name,
+                "filesystem": filesystem,
+                "disk_id": disk_name,
+                "removable": removable,
+                "connection": connection,
+            })
+        except (OSError, ValueError, IndexError):
+            continue
+
+    # Compatibility fallback for non-Docker/manual deployments where host mountinfo
+    # is unavailable. Never add these on top of discovered host mounts.
+    if not out:
+        for part in psutil.disk_partitions(all=False):
+            if not part.device.startswith("/dev/") or part.fstype in _PSEUDO_FILESYSTEMS:
+                continue
+            path = part.mountpoint
+            if not path.startswith(_HOST_ROOT):
+                path = os.path.normpath(os.path.join(_HOST_ROOT, path.lstrip("/")))
+            try:
+                usage = psutil.disk_usage(path)
+                disk_name, _, removable, connection = _host_disk_identity("0:0", part.device)
+                out.append({
+                    "id": part.device, "mount": part.mountpoint, "pct": usage.percent,
+                    "used_gb": round(usage.used / 1e9, 1), "total_gb": round(usage.total / 1e9, 1),
+                    "free_gb": round(usage.free / 1e9, 1), "device": part.device,
+                    "disk": disk_name, "filesystem": part.fstype, "disk_id": disk_name,
+                    "removable": removable, "connection": connection,
+                })
+            except OSError:
+                continue
     return out
 
 
