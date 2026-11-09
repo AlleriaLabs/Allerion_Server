@@ -118,15 +118,45 @@ def _host_mountinfo():
     return []
 
 
+def _block_parent(sys_path):
+    name = os.path.basename(sys_path.rstrip("/"))
+    if os.path.exists(os.path.join(sys_path, "partition")):
+        return os.path.basename(os.path.dirname(sys_path.rstrip("/")))
+    return name
+
+
+def _mounted_backing_disks(major_minor, visited=None):
+    visited = visited or set()
+    if major_minor in visited:
+        return set()
+    visited.add(major_minor)
+    link = os.path.join("/hostfs/sys/dev/block", major_minor)
+    if not os.path.exists(link):
+        return set()
+    sys_path = os.path.realpath(link)
+    slaves = glob.glob(os.path.join(sys_path, "slaves", "*"))
+    if slaves:
+        result = set()
+        for slave in slaves:
+            dev_file = os.path.join(slave, "dev")
+            try:
+                with open(dev_file, encoding="ascii") as handle:
+                    result.update(_mounted_backing_disks(handle.read().strip(), visited))
+            except OSError:
+                continue
+        return result
+    if "/virtual/" in sys_path:
+        return set()
+    return {_block_parent(sys_path)}
+
+
 def _host_disk_identity(major_minor, source):
     sys_link = os.path.join("/hostfs/sys/dev/block", major_minor)
     try:
         sys_path = os.path.realpath(sys_link)
         if not os.path.exists(sys_link):
             raise OSError("sysfs block device unavailable")
-        name = os.path.basename(sys_path)
-        if os.path.exists(os.path.join(sys_path, "partition")):
-            name = os.path.basename(os.path.dirname(sys_path))
+        name = _block_parent(sys_path)
         removable = False
         removable_file = os.path.join("/hostfs/sys/class/block", os.path.basename(sys_path), "removable")
         try:
@@ -135,17 +165,67 @@ def _host_disk_identity(major_minor, source):
         except OSError:
             pass
         usb = "/usb" in sys_path.lower()
-        return name, sys_path, removable or usb, "USB" if usb else "Internal"
+        model = ""
+        model_file = os.path.join("/hostfs/sys/class/block", name, "device", "model")
+        try:
+            with open(model_file, encoding="utf-8") as handle:
+                model = handle.read().strip()
+        except OSError:
+            pass
+        return name, sys_path, removable or usb, "USB" if usb else "Internal", model
     except OSError:
-        return source, "", False, "Unknown"
+        return source, "", False, "Unknown", ""
+
+
+def _unmounted_physical_disks(mounted_names):
+    found = []
+    excluded_prefixes = ("loop", "ram", "zram", "dm-", "md", "nbd", "sr", "fd")
+    for block_path in glob.glob("/hostfs/sys/class/block/*"):
+        name = os.path.basename(block_path)
+        if name.startswith(excluded_prefixes):
+            continue
+        try:
+            sys_path = os.path.realpath(block_path)
+            if "/virtual/" in sys_path or os.path.exists(os.path.join(sys_path, "partition")):
+                continue
+            with open(os.path.join(block_path, "size"), encoding="ascii") as handle:
+                size_bytes = int(handle.read().strip()) * 512
+            with open(os.path.join(block_path, "dev"), encoding="ascii") as handle:
+                major_minor = handle.read().strip()
+            if size_bytes <= 0 or name in mounted_names:
+                continue
+            removable = False
+            try:
+                with open(os.path.join(block_path, "removable"), encoding="ascii") as handle:
+                    removable = handle.read().strip() == "1"
+            except OSError:
+                pass
+            usb = "/usb" in sys_path.lower()
+            model = ""
+            try:
+                with open(os.path.join(block_path, "device", "model"), encoding="utf-8") as handle:
+                    model = handle.read().strip()
+            except OSError:
+                pass
+            found.append({
+                "id": major_minor, "mount": "Not mounted", "pct": None,
+                "used_gb": 0.0, "total_gb": round(size_bytes / 1e9, 1), "free_gb": None,
+                "device": "/dev/" + name, "disk": model or name, "model": model,
+                "filesystem": "", "disk_id": name, "removable": removable or usb,
+                "connection": "USB" if usb else "Internal", "mounted": False,
+            })
+        except (OSError, ValueError):
+            continue
+    return found
 
 
 def disks():
     out = []
     seen = set()
+    mounted_names = set()
     for line in _host_mountinfo():
         try:
-            left, right = line.rstrip("\n").split(" - ", 1)
+            left, right = line.rstrip("\\n").split(" - ", 1)
             fields = left.split()
             tail = right.split()
             if len(fields) < 5 or len(tail) < 2:
@@ -154,7 +234,6 @@ def disks():
             mountpoint = _unescape_mount_field(fields[4])
             filesystem = tail[0]
             source = _unescape_mount_field(tail[1])
-            # Only real block-backed filesystems belong in physical storage totals.
             if filesystem in _PSEUDO_FILESYSTEMS or not source.startswith("/dev/"):
                 continue
             identity = (major_minor, _unescape_mount_field(fields[3]))
@@ -163,32 +242,25 @@ def disks():
             host_path = os.path.normpath(os.path.join(_HOST_ROOT, mountpoint.lstrip("/")))
             if not os.path.exists(host_path):
                 continue
-            # Ignore host mount-table entries whose submount was not propagated into
-            # the container; otherwise disk_usage would report the parent filesystem.
             if mountpoint != "/" and not os.path.ismount(host_path):
                 continue
             usage = psutil.disk_usage(host_path)
-            disk_name, sys_path, removable, connection = _host_disk_identity(major_minor, source)
+            disk_name, sys_path, removable, connection, model = _host_disk_identity(major_minor, source)
             seen.add(identity)
+            mounted_names.update(_mounted_backing_disks(major_minor))
+            if sys_path and "/virtual/" not in sys_path:
+                mounted_names.add(disk_name)
             out.append({
-                "id": major_minor,
-                "mount": mountpoint,
-                "pct": usage.percent,
-                "used_gb": round(usage.used / 1e9, 1),
-                "total_gb": round(usage.total / 1e9, 1),
-                "free_gb": round(usage.free / 1e9, 1),
-                "device": source,
-                "disk": disk_name,
-                "filesystem": filesystem,
-                "disk_id": disk_name,
-                "removable": removable,
-                "connection": connection,
+                "id": major_minor, "mount": mountpoint, "pct": usage.percent,
+                "used_gb": round(usage.used / 1e9, 1), "total_gb": round(usage.total / 1e9, 1),
+                "free_gb": round(usage.free / 1e9, 1), "device": source,
+                "disk": model or disk_name, "model": model, "filesystem": filesystem,
+                "disk_id": disk_name, "removable": removable, "connection": connection,
+                "mounted": True,
             })
         except (OSError, ValueError, IndexError):
             continue
 
-    # Compatibility fallback for non-Docker/manual deployments where host mountinfo
-    # is unavailable. Never add these on top of discovered host mounts.
     if not out:
         for part in psutil.disk_partitions(all=False):
             if not part.device.startswith("/dev/") or part.fstype in _PSEUDO_FILESYSTEMS:
@@ -198,18 +270,19 @@ def disks():
                 path = os.path.normpath(os.path.join(_HOST_ROOT, path.lstrip("/")))
             try:
                 usage = psutil.disk_usage(path)
-                disk_name, _, removable, connection = _host_disk_identity("0:0", part.device)
+                disk_name, _, removable, connection, model = _host_disk_identity("0:0", part.device)
                 out.append({
                     "id": part.device, "mount": part.mountpoint, "pct": usage.percent,
                     "used_gb": round(usage.used / 1e9, 1), "total_gb": round(usage.total / 1e9, 1),
                     "free_gb": round(usage.free / 1e9, 1), "device": part.device,
-                    "disk": disk_name, "filesystem": part.fstype, "disk_id": disk_name,
-                    "removable": removable, "connection": connection,
+                    "disk": model or disk_name, "model": model, "filesystem": part.fstype,
+                    "disk_id": disk_name, "removable": removable, "connection": connection,
+                    "mounted": True,
                 })
             except OSError:
                 continue
+    out.extend(_unmounted_physical_disks(mounted_names))
     return out
-
 
 RAPL_DIRS = sorted(glob.glob("/sys/class/powercap/intel-rapl:[0-9]"))
 
