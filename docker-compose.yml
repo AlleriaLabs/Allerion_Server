@@ -28,7 +28,6 @@ services:
       TOKEN: ${TOKEN:?Set TOKEN in the .env file}
       PORT: "8081"
       SPEEDTEST_MINUTES: "30"
-      DISK_PATHS: "/hostfs:System,/hostfs/DATA:Data"
       TZ: "Asia/Manila"
       DATA_DIR: "/data"
       PRICE_PER_KWH: "0"
