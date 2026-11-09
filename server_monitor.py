@@ -99,7 +99,7 @@ _PSEUDO_FILESYSTEMS = {
     "autofs", "binfmt_misc", "bpf", "cgroup", "cgroup2", "configfs",
     "debugfs", "devpts", "devtmpfs", "efivarfs", "fusectl", "hugetlbfs",
     "mqueue", "nsfs", "overlay", "proc", "pstore", "ramfs", "securityfs",
-    " squashfs", "sysfs", "tmpfs", "tracefs",
+    "squashfs", "sysfs", "tmpfs", "tracefs",
 }
 
 
