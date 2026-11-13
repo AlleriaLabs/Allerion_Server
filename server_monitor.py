@@ -1083,6 +1083,67 @@ def lan_inventory():
         "note": "Bridge MAC observations have no IP mapping in the current neighbor cache; they are not counted as IP devices.",
     }
 
+def network_dns_config():
+    """Read DNS resolvers configured on the CasaOS host, not Docker synthetic DNS."""
+    candidates = [
+        ("/hostfs/run/systemd/resolve/resolv.conf", "Host systemd-resolved upstream"),
+        ("/hostfs/run/NetworkManager/no-stub-resolv.conf", "Host NetworkManager upstream"),
+        ("/hostfs/etc/resolv.conf", "Host resolv.conf"),
+        ("/run/systemd/resolve/resolv.conf", "systemd-resolved upstream"),
+        ("/etc/resolv.conf", "Process resolv.conf"),
+    ]
+    local_stubs = {"127.0.0.53", "127.0.0.1", "::1"}
+    seen = set()
+    servers = []
+    selected_source = None
+    search_domains = []
+    for path, source in candidates:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                lines = handle.read().splitlines()
+        except (OSError, UnicodeError):
+            continue
+        parsed = []
+        domains = []
+        for line in lines:
+            fields = line.split("#", 1)[0].split()
+            if len(fields) >= 2 and fields[0] == "nameserver":
+                address = fields[1].strip()
+                try:
+                    ipaddress.ip_address(address)
+                except ValueError:
+                    continue
+                parsed.append(address)
+            elif fields and fields[0] in ("search", "domain"):
+                domains.extend(fields[1:])
+        if not parsed:
+            continue
+        non_stub = [ip for ip in parsed if ip not in local_stubs]
+        if non_stub:
+            selected_source = source
+            search_domains = domains
+            for address in non_stub:
+                if address not in seen:
+                    servers.append({"address": address, "type": "upstream", "source": source})
+                    seen.add(address)
+            break
+        if not servers:
+            selected_source = source
+            search_domains = domains
+            for address in parsed:
+                if address not in seen:
+                    servers.append({"address": address, "type": "local_stub", "source": source})
+                    seen.add(address)
+    return {
+        "servers": servers,
+        "count": len(servers),
+        "source": selected_source,
+        "search_domains": search_domains,
+        "detected": bool(servers),
+        "note": "DNS configuration read from CasaOS host resolver files. This is configured host DNS, not proof every LAN client uses the same resolver.",
+    }
+
+
 def network_topology(inventory):
     """Infer same-subnet gateway associations from the active IPv4 route.
 
@@ -1229,6 +1290,7 @@ def network_topology(inventory):
         "interface": interface,
         "source_ip": source_ip,
         "subnet": subnet,
+        "dns": network_dns_config(),
         "mode": "inferred-gateway-paths",
         "link_count": len(links),
         "note": note,
