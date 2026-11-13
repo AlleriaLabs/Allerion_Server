@@ -1480,7 +1480,7 @@ def network_quality():
             output = (probe.stdout or "") + "\n" + (probe.stderr or "")
             loss = re.search(r"(\d+(?:\.\d+)?)%\s*packet loss", output)
             latency = re.search(
-                r"(?:rtt|round-trip) min/avg/max/(?:mdev|stddev) = [\d.]+/([\d.]+)/",
+                r"(?:rtt|round-trip) min/avg/max(?:/(?:mdev|stddev))? = [\d.]+/([\d.]+)/",
                 output
             )
             if loss:
