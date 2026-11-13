@@ -1477,10 +1477,10 @@ def network_quality():
                 ["ping", "-n", "-c", "3", "-W", "1", target["target"]],
                 capture_output=True, text=True, timeout=6
             )
-            output = (probe.stdout or "") + "\\n" + (probe.stderr or "")
-            loss = re.search(r"(\\d+(?:\\.\\d+)?)%\\s*packet loss", output)
+            output = (probe.stdout or "") + "\n" + (probe.stderr or "")
+            loss = re.search(r"(\d+(?:\.\d+)?)%\s*packet loss", output)
             latency = re.search(
-                r"(?:rtt|round-trip) min/avg/max/(?:mdev|stddev) = [\\d.]+/([\\d.]+)/",
+                r"(?:rtt|round-trip) min/avg/max/(?:mdev|stddev) = [\d.]+/([\d.]+)/",
                 output
             )
             if loss:
