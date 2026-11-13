@@ -886,6 +886,7 @@ def api_capabilities():
             "network_diagnostics": True,
             "network_topology": ENABLE_LAN_DISCOVERY,
             "network_traffic": ENABLE_LAN_DISCOVERY and platform.system() == "Linux",
+            "network_quality": ENABLE_LAN_DISCOVERY and platform.system() == "Linux",
             "energy_breakdown": True,
             "energy_forecast": bool(METER and len(METER.hist) >= 3),
             "webhooks": bool(ALERT_WEBHOOK_URL),
@@ -1443,6 +1444,67 @@ def network_traffic_snapshot():
     }
 
 
+def network_quality():
+    """Measure ICMP latency and packet loss to the CasaOS default gateway and a public reachability target."""
+    if not ENABLE_LAN_DISCOVERY:
+        raise PermissionError("Network quality checks require ENABLE_LAN_DISCOVERY=1.")
+
+    gateway = None
+    try:
+        route = subprocess.run(["ip", "-4", "route", "show", "default"],
+                               capture_output=True, text=True, timeout=2)
+        for line in route.stdout.splitlines():
+            columns = line.split()
+            if columns and columns[0] == "default" and "via" in columns:
+                index = columns.index("via")
+                if index + 1 < len(columns):
+                    gateway = columns[index + 1]
+                    break
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    targets = []
+    if gateway:
+        targets.append({"name": "Default gateway", "target": gateway})
+    targets.append({"name": "Internet reachability", "target": "1.1.1.1"})
+
+    results = []
+    for target in targets:
+        item = {**target, "status": "unavailable", "latency_ms": None,
+                "packet_loss_pct": None, "samples": 3}
+        try:
+            probe = subprocess.run(
+                ["ping", "-n", "-c", "3", "-W", "1", target["target"]],
+                capture_output=True, text=True, timeout=6
+            )
+            output = (probe.stdout or "") + "\\n" + (probe.stderr or "")
+            loss = re.search(r"(\\d+(?:\\.\\d+)?)%\\s*packet loss", output)
+            latency = re.search(
+                r"(?:rtt|round-trip) min/avg/max/(?:mdev|stddev) = [\\d.]+/([\\d.]+)/",
+                output
+            )
+            if loss:
+                item["packet_loss_pct"] = float(loss.group(1))
+                item["latency_ms"] = float(latency.group(1)) if latency else None
+                item["status"] = "ok" if item["packet_loss_pct"] < 100 else "unreachable"
+            else:
+                item["error"] = "The ping utility did not return parseable packet statistics."
+        except FileNotFoundError:
+            item["error"] = "The ping utility is not installed in the monitoring environment."
+        except subprocess.TimeoutExpired:
+            item["error"] = "The ICMP probe timed out before statistics were returned."
+        except OSError as exc:
+            item["error"] = "ICMP probe unavailable: " + exc.__class__.__name__
+        results.append(item)
+
+    return {
+        "available": any(item["packet_loss_pct"] is not None for item in results),
+        "method": "ICMP echo, 3 probes per target",
+        "targets": results,
+        "note": "ICMP may be filtered by the router or destination. Unavailable probes do not by themselves prove an outage.",
+    }
+
+
 def network_diagnostics(target):
     try:
         addr = ipaddress.ip_address(target)
@@ -1646,6 +1708,8 @@ class Handler(BaseHTTPRequestHandler):
                 payload = network_topology(lan_inventory())
             elif u.path == "/api/network/traffic":
                 payload = network_traffic_snapshot()
+            elif u.path == "/api/network/quality":
+                payload = network_quality()
             elif u.path == "/api/network/diagnostics":
                 target = parse_qs(u.query).get("target", [""])[0]
                 payload = network_diagnostics(target)
