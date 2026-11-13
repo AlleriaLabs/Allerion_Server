@@ -79,11 +79,11 @@ jobs:
 
       - name: Verify DNS and network quality response schemas
         run: |
-          code=$(curl --silent --output /tmp/topology.json --write-out '%{http_code}' \\
+          code=$(curl --silent --output /tmp/topology.json --write-out '%{http_code}' \
             -H "X-Token: $TOKEN" http://127.0.0.1:8081/api/network/topology)
           test "$code" = "200"
           python -c "import json; d=json.load(open('/tmp/topology.json')); assert isinstance(d.get('dns'), dict); assert isinstance(d['dns'].get('servers'), list); assert isinstance(d.get('nodes'), list); assert isinstance(d.get('links'), list)"
-          code=$(curl --silent --output /tmp/quality.json --write-out '%{http_code}' \\
+          code=$(curl --silent --output /tmp/quality.json --write-out '%{http_code}' \
             -H "X-Token: $TOKEN" http://127.0.0.1:8081/api/network/quality)
           test "$code" = "200"
           python -c "import json; d=json.load(open('/tmp/quality.json')); assert isinstance(d.get('targets'), list); assert d.get('method') == 'ICMP echo, 3 probes per target'; assert all('packet_loss_pct' in x and 'latency_ms' in x for x in d['targets'])"
