@@ -139,20 +139,28 @@ def send_message(title, body, data=None):
 
 def send_alert(event):
     recovered = bool(event.get("recovered"))
+    simulated = bool(event.get("simulated"))
     server = str(event.get("server") or "Server")
     metric = str(event.get("metric") or "health")
     value = event.get("value")
     threshold = event.get("threshold")
-    title = "ALLERION · " + ("Recovered" if recovered else "Alert")
-    if recovered:
-        body = server + " · " + metric.upper() + " returned to normal."
+    if simulated:
+        title = "ALLERION · Test Alert"
+        body = "SIMULATED · " + server + " · " + metric.upper() + " is " + str(value)
     else:
-        body = server + " · " + metric.upper() + " is " + str(value)
-        if threshold is not None:
-            body += " (threshold " + str(threshold) + ")"
+        title = "ALLERION · " + ("Recovered" if recovered else "Alert")
+        if recovered:
+            body = server + " · " + metric.upper() + " returned to normal."
+        else:
+            body = server + " · " + metric.upper() + " is " + str(value)
+            if threshold is not None:
+                body += " (threshold " + str(threshold) + ")"
+    if simulated and threshold is not None:
+        body += " (test threshold " + str(threshold) + ")"
     return send_message(title, body, {
         "type": "alert", "server": server, "metric": metric,
         "recovered": "true" if recovered else "false",
+        "simulated": "true" if simulated else "false",
         "timestamp": event.get("timestamp", int(time.time() * 1000)),
     })
 
