@@ -23,9 +23,14 @@ def connect():
       user_id TEXT NOT NULL, user_name TEXT NOT NULL, session_id TEXT NOT NULL,
       item_id TEXT, item_name TEXT, series_name TEXT, item_type TEXT,
       device TEXT, client TEXT, state TEXT NOT NULL, paused INTEGER NOT NULL)""")
+    # Safe, additive migration for databases created by earlier Allerion versions.
+    columns = {row["name"] for row in c.execute("PRAGMA table_info(samples)")}
+    if "position_ticks" not in columns:
+        c.execute("ALTER TABLE samples ADD COLUMN position_ticks INTEGER")
     c.execute("CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_samples_user ON samples(user_id,ts)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_samples_item ON samples(item_id,ts)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_samples_session_item ON samples(session_id,item_id,ts)")
     return c
 
 def sample_once():
@@ -39,21 +44,53 @@ def sample_once():
         sessions = json.loads(response.read(2_000_000).decode("utf-8"))
     now = int(time.time()); day = datetime.fromtimestamp(now, TZ).date().isoformat()
     rows=[]
-    for s in sessions if isinstance(sessions,list) else []:
+    with LOCK, connect() as db:
+      for s in sessions if isinstance(sessions,list) else []:
         user=s.get("UserId"); name=s.get("UserName")
         if not user or not name: continue
-        item=s.get("NowPlayingItem") or {}; state=s.get("PlayState") or {}
-        paused=bool(state.get("IsPaused"))
-        playing=bool(item)
+        item=s.get("NowPlayingItem") or {}; play_state=s.get("PlayState") or {}
+        paused=bool(play_state.get("IsPaused"))
+        item_id=str(item.get("Id") or "") or None
+        position=play_state.get("PositionTicks")
+        try:
+            position=int(position) if position is not None else None
+        except (TypeError, ValueError):
+            position=None
+
+        if not item:
+            playback_state="online"
+        elif paused:
+            playback_state="paused"
+        elif position is None:
+            playback_state="unknown"
+        else:
+            session_id=str(s.get("Id") or s.get("DeviceId") or "unknown")
+            previous=db.execute(
+                """SELECT ts,position_ticks FROM samples
+                   WHERE session_id=? AND item_id=? AND position_ticks IS NOT NULL
+                   ORDER BY ts DESC,id DESC LIMIT 1""",
+                (session_id,item_id)
+            ).fetchone()
+            # Jellyfin may omit PlayState.IsPlaying. Confirm playback by observing
+            # forward movement of PositionTicks for this same session and item.
+            if previous and position > int(previous["position_ticks"]):
+                elapsed=max(0, now-int(previous["ts"]))
+                advance_seconds=(position-int(previous["position_ticks"]))/10_000_000
+                # Allow modest timing jitter, but reject implausibly large jumps.
+                playback_state="playing" if 0 < advance_seconds <= elapsed + 15 else "unknown"
+            else:
+                playback_state="unknown"
+
         rows.append((now,day,str(user),str(name),str(s.get("Id") or s.get("DeviceId") or "unknown"),
-          str(item.get("Id") or "") or None,str(item.get("Name") or "") or None,
+          item_id,str(item.get("Name") or "") or None,
           str(item.get("SeriesName") or "") or None,str(item.get("Type") or "") or None,
           str(s.get("DeviceName") or s.get("Device") or "")[:120],
-          str(s.get("Client") or "")[:120], "paused" if playing and paused else "playing" if playing else "online", int(paused)))
-    with LOCK, connect() as db:
-        db.executemany("INSERT INTO samples(ts,day,user_id,user_name,session_id,item_id,item_name,series_name,item_type,device,client,state,paused) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",rows)
-        # Retain 2 years; database remains bounded.
-        db.execute("DELETE FROM samples WHERE ts < ?", (now-63072000,))
+          str(s.get("Client") or "")[:120], playback_state, int(paused), position))
+      db.executemany("""INSERT INTO samples(ts,day,user_id,user_name,session_id,item_id,item_name,
+        series_name,item_type,device,client,state,paused,position_ticks)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",rows)
+      # Retain 2 years; database remains bounded.
+      db.execute("DELETE FROM samples WHERE ts < ?", (now-63072000,))
     return {"configured":True,"sampled_at":now,"sessions":len(rows)}
 
 def collector():
