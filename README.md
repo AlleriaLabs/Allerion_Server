@@ -14,7 +14,7 @@ Python backend for the Allerion home/server monitoring Android app.
 ## Quick start (Docker Compose)
 1. Copy `.env.example` to `.env`.
 2. Set `TOKEN` to a long, unique random secret. Never commit `.env`.
-3. Run `docker compose up -d --build`.
+3. Run `docker compose up -d --build` (the backend service/container is named `allerion-server`).
 4. The API listens on port `8081` in the host network namespace.
 
 Back up and preserve the `data/` directory on the server. This repository intentionally excludes runtime energy history and saved power configuration.
