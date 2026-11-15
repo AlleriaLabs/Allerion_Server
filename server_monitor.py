@@ -1439,10 +1439,9 @@ def _ensure_network_traffic_capture():
 
 def network_traffic_snapshot():
     if not ENABLE_LAN_DISCOVERY:
-        raise PermissionError("Live network traffic requires ENABLE_LAN_DISCOVERY=1.")
-    if platform.system() != "Linux" or not hasattr(socket, "AF_PACKET"):
-        return {"available": False, "status": "unsupported",
-                "error": "Live packet capture requires Linux AF_PACKET support."}
+        raise PermissionError('Live network traffic requires ENABLE_LAN_DISCOVERY=1.')
+    if platform.system() != 'Linux' or not hasattr(socket, 'AF_PACKET'):
+        return {'available': False, 'status': 'unsupported', 'error': 'Live packet capture requires Linux AF_PACKET support.'}
     _ensure_network_traffic_capture()
     now = time.time()
     with _traffic_lock:
@@ -1451,35 +1450,68 @@ def network_traffic_snapshot():
     peers = {}
     rx_bytes = tx_bytes = 0
     for at, peer, direction, size, src, dst in events:
-        row = peers.setdefault(peer, {"ip": peer, "packets": 0,
-                                      "rx_bytes": 0, "tx_bytes": 0,
-                                      "last_seen": at})
-        row["packets"] += 1
-        row[direction + "_bytes"] += size
-        row["last_seen"] = max(row["last_seen"], at)
-        if direction == "rx":
-            rx_bytes += size
-        else:
-            tx_bytes += size
-    return {
-        "available": state.get("status") == "active",
-        "status": state.get("status"),
-        "interface": state.get("interface"),
-        "error": state.get("error"),
-        "packet_count": state.get("packet_count", 0),
-        "last_packet_age_ms": int(max(0, now - state["last_packet_at"]) * 1000)
-                              if state.get("last_packet_at") else None,
-        "active_peer": state.get("last_packet_peer"),
-        "last_src": state.get("last_src"),
-        "last_dst": state.get("last_dst"),
-        "last_direction": state.get("last_direction"),
-        "rx_bytes_per_sec": round(rx_bytes / 3.0, 1),
-        "tx_bytes_per_sec": round(tx_bytes / 3.0, 1),
-        "recent_peers": sorted(peers.values(),
-                               key=lambda item: item["last_seen"], reverse=True)[:40],
-        "scope": "IP packets visible on the monitoring server's selected network interface; switched traffic not delivered to this interface cannot be observed.",
-    }
+        row = peers.setdefault(peer, {'ip': peer, 'packets': 0, 'rx_bytes': 0, 'tx_bytes': 0, 'last_seen': at})
+        row['packets'] += 1
+        row[direction + '_bytes'] += size
+        row['last_seen'] = max(row['last_seen'], at)
+        if direction == 'rx': rx_bytes += size
+        else: tx_bytes += size
+    payload = {'available': state.get('status') == 'active', 'status': state.get('status'),
+        'interface': state.get('interface'), 'error': state.get('error'),
+        'packet_count': state.get('packet_count', 0),
+        'last_packet_age_ms': int(max(0, now - state['last_packet_at']) * 1000) if state.get('last_packet_at') else None,
+        'active_peer': state.get('last_packet_peer'), 'last_src': state.get('last_src'),
+        'last_dst': state.get('last_dst'), 'last_direction': state.get('last_direction'),
+        'rx_bytes_per_sec': round(rx_bytes / 3.0, 1), 'tx_bytes_per_sec': round(tx_bytes / 3.0, 1),
+        'recent_peers': sorted(peers.values(), key=lambda item: item['last_seen'], reverse=True)[:40],
+        'scope': "IP packets visible on the monitoring server's selected network interface; switched traffic not delivered to this interface cannot be observed."}
+    _record_network_intelligence(payload)
+    return payload
 
+_NETWORK_INTEL_FILE = os.path.join(DATA_DIR, 'network_intelligence.json')
+_network_intel_lock = threading.Lock()
+_network_intel = {'samples': [], 'devices': {}, 'alerts': []}
+try:
+    with open(_NETWORK_INTEL_FILE, encoding='utf-8') as _handle:
+        _saved = json.load(_handle)
+    if isinstance(_saved, dict): _network_intel.update(_saved)
+except (OSError, ValueError, TypeError):
+    pass
+
+def _record_network_intelligence(payload):
+    now = int(time.time())
+    with _network_intel_lock:
+        samples = _network_intel.setdefault('samples', [])
+        sample = {'ts': now, 'rx_bytes_per_sec': payload.get('rx_bytes_per_sec', 0), 'tx_bytes_per_sec': payload.get('tx_bytes_per_sec', 0), 'packet_count': payload.get('packet_count', 0), 'active_peers': len(payload.get('recent_peers', []))}
+        if not samples or now - int(samples[-1].get('ts', 0)) >= 15: samples.append(sample)
+        cutoff = now - 604800
+        _network_intel['samples'] = [x for x in samples if int(x.get('ts', 0)) >= cutoff][-3000:]
+        devices = _network_intel.setdefault('devices', {})
+        try:
+            inventory = lan_inventory()
+            for device in inventory.get('items', []):
+                ip = str(device.get('ip') or '')
+                mac = str(device.get('mac') or '').lower()
+                if not ip: continue
+                key = mac or ip
+                old = devices.get(key, {})
+                devices[key] = dict(old, ip=ip, mac=mac or None, hostname=device.get('hostname') or old.get('hostname'), interface=device.get('interface') or old.get('interface'), state=device.get('state') or old.get('state'), first_seen=old.get('first_seen', now), last_seen=now, identity_source='passive ARP/neighbour cache')
+        except Exception: pass
+        previous = _network_intel['samples'][:-1][-20:]
+        if len(previous) >= 5:
+            rates = sorted(max(float(x.get('rx_bytes_per_sec', 0)), float(x.get('tx_bytes_per_sec', 0))) for x in previous)
+            baseline = rates[len(rates) // 2]
+            current = max(float(sample['rx_bytes_per_sec']), float(sample['tx_bytes_per_sec']))
+            alerts = _network_intel.setdefault('alerts', [])
+            if current >= 1000000 and current > max(baseline * 10, 5000000) and (not alerts or now - int(alerts[-1].get('ts', 0)) > 300):
+                alerts.append({'ts': now, 'type': 'traffic_spike', 'severity': 'notice', 'rate_bytes_per_sec': round(current, 1), 'baseline_bytes_per_sec': round(baseline, 1), 'message': 'Traffic rate is substantially above its recent baseline.'})
+            _network_intel['alerts'] = alerts[-100:]
+        try: write_private_json(_NETWORK_INTEL_FILE, _network_intel)
+        except OSError: pass
+
+def network_intelligence_history():
+    with _network_intel_lock:
+        return {'retention_days': 7, 'sample_interval_seconds': 15, 'samples': list(_network_intel.get('samples', [])), 'devices': sorted(list(_network_intel.get('devices', {}).values()), key=lambda x: x.get('last_seen', 0), reverse=True)[:250], 'alerts': list(_network_intel.get('alerts', []))[-100:], 'note': 'Metadata only; device visibility depends on passive neighbour-cache observations and traffic is limited to packets visible on the monitoring interface.'}
 
 def network_quality():
     """Measure ICMP latency and packet loss to the CasaOS default gateway and a public reachability target."""
@@ -1817,6 +1849,8 @@ class Handler(BaseHTTPRequestHandler):
                 payload = network_topology(lan_inventory())
             elif u.path == "/api/network/traffic":
                 payload = network_traffic_snapshot()
+            elif u.path == "/api/network/intelligence/history":
+                payload = network_intelligence_history()
             elif u.path == "/api/network/quality":
                 payload = network_quality()
             elif u.path == "/api/network/diagnostics":
