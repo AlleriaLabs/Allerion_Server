@@ -1537,16 +1537,17 @@ def _record_network_intelligence(payload):
                     new_device_alerts.append({'ts': now, 'type': 'new_device', 'severity': 'notice', 'ip': ip, 'mac': mac or None, 'vendor': device.get('vendor'), 'message': 'A previously unseen device appeared in the passive neighbor cache.'})
                 devices[key] = dict(old, ip=ip, mac=mac or None, vendor=device.get('vendor') or old.get('vendor'), hostname=device.get('hostname') or old.get('hostname'), interface=device.get('interface') or old.get('interface'), state=device.get('state') or old.get('state'), first_seen=old.get('first_seen', now), last_seen=now, identity_source='passive ARP/neighbour cache')
         except Exception: pass
+        alerts = _network_intel.setdefault('alerts', [])
+        alerts.extend(new_device_alerts)
         previous = _network_intel['samples'][:-1][-20:]
         if len(previous) >= 5:
             rates = sorted(max(float(x.get('rx_bytes_per_sec', 0)), float(x.get('tx_bytes_per_sec', 0))) for x in previous)
             baseline = rates[len(rates) // 2]
             current = max(float(sample['rx_bytes_per_sec']), float(sample['tx_bytes_per_sec']))
-            alerts = _network_intel.setdefault('alerts', [])
-            alerts.extend(new_device_alerts)
-            if current >= 1000000 and current > max(baseline * 10, 5000000) and (not alerts or now - int(alerts[-1].get('ts', 0)) > 300):
+            last_spike = next((item for item in reversed(alerts) if item.get('type') == 'traffic_spike'), None)
+            if current >= 1000000 and current > max(baseline * 10, 5000000) and (not last_spike or now - int(last_spike.get('ts', 0)) > 300):
                 alerts.append({'ts': now, 'type': 'traffic_spike', 'severity': 'notice', 'rate_bytes_per_sec': round(current, 1), 'baseline_bytes_per_sec': round(baseline, 1), 'message': 'Traffic rate is substantially above its recent baseline.'})
-            _network_intel['alerts'] = alerts[-100:]
+        _network_intel['alerts'] = alerts[-100:]
         try: write_private_json(_NETWORK_INTEL_FILE, _network_intel)
         except OSError: pass
 
