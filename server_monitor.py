@@ -1030,7 +1030,7 @@ def lan_inventory():
         proc = subprocess.run(["ip", "neigh", "show"], capture_output=True, text=True, timeout=2)
         for line in proc.stdout.splitlines():
             cols = line.split()
-            if len(cols) < 2 or not re.fullmatch(r"\\d{1,3}(?:\\.\\d{1,3}){3}", cols[0]):
+            if len(cols) < 2 or not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", cols[0]):
                 continue
             ip = cols[0]
             mac = cols[cols.index("lladdr")+1].lower() if "lladdr" in cols and cols.index("lladdr")+1 < len(cols) else ""
@@ -1093,7 +1093,7 @@ def network_dns_config():
         ("/run/systemd/resolve/resolv.conf", "systemd-resolved upstream"),
         ("/etc/resolv.conf", "Process resolv.conf"),
     ]
-    local_stubs = {"127.0.0.53", "127.0.0.1", "::1"}
+    local_stubs = {"127.0.0.53", "127.0.0.1", "127.0.0.11", "::1"}
     seen = set()
     servers = []
     selected_source = None
