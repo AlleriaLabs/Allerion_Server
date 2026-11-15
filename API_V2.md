@@ -16,6 +16,7 @@ All `/api/*` routes require the `X-Token` header. Query-string tokens are delibe
 - `GET /api/network/devices` — passive ARP / neighbor-cache inventory. Disabled unless `ENABLE_LAN_DISCOVERY=1`.
 - `GET /api/network/topology` — passive neighbor inventory with inferred same-subnet gateway associations; these are logical links, not verified physical paths.
 - `GET /api/network/traffic` — live IP packet metadata observed on the monitoring server's selected Linux interface (packet counts, peer IPs and byte rates). Requires `ENABLE_LAN_DISCOVERY=1`, Linux `AF_PACKET`, and Docker `NET_RAW` capability. Packet payloads are never read or returned. It cannot see switched traffic that does not reach the monitoring server's interface; full LAN-wide visibility requires a mirrored switch port or gateway capture.
+- `GET /api/network/history?hours=24` — persistent 24-hour traffic-rate samples (RX/TX bytes per second, packets per second and active peer count), sampled at most every 10 seconds and stored with private file permissions. Uses the same interface visibility limits as live packet capture.
 - `GET /api/network/diagnostics?target=192.168.1.10` — TCP connect checks on ports 443, 80, 22 and 8080. Only private IPv4 addresses are accepted. Packet loss is not claimed or inferred.
 
 ## Energy
