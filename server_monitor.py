@@ -1048,6 +1048,39 @@ def service_inventory():
     return {"items": result, "cached": False}
 
 
+def mac_vendor(mac):
+    """Best-effort vendor hint from a small built-in OUI map; not authoritative."""
+    value = str(mac or "").lower()
+    if not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", value):
+        return None
+    try:
+        first = int(value[:2], 16)
+    except ValueError:
+        return None
+    if first & 2:
+        return "Private / randomized MAC"
+    oui = value[:8]
+    vendors = {
+        "00:1a:11": "Google", "3c:5a:b4": "Google", "f4:f5:d8": "Google",
+        "3c:22:fb": "Apple", "a4:83:e7": "Apple", "f0:18:98": "Apple",
+        "00:16:cb": "Apple", "ac:de:48": "Apple",
+        "8c:85:90": "Samsung", "cc:07:ab": "Samsung", "e4:7c:f9": "Samsung",
+        "28:6c:07": "Huawei", "48:db:50": "Huawei", "ac:e2:d3": "Huawei",
+        "00:e0:fc": "Huawei", "f8:e8:11": "Huawei",
+        "64:09:80": "Xiaomi", "78:11:dc": "Xiaomi", "c8:ff:28": "Xiaomi",
+        "50:64:2b": "TP-Link", "c0:06:c3": "TP-Link", "ec:08:6b": "TP-Link",
+        "b0:be:76": "TP-Link", "f4:ec:38": "TP-Link",
+        "00:1d:aa": "ASUSTek", "2c:56:dc": "ASUSTek", "ac:9e:17": "ASUSTek",
+        "00:1f:3b": "Intel", "3c:97:0e": "Intel", "a4:4c:c8": "Intel",
+        "00:25:90": "Supermicro", "b8:ae:ed": "Dell", "f8:bc:12": "Dell",
+        "00:1e:68": "Hewlett Packard", "3c:d9:2b": "Hewlett Packard",
+        "00:0c:29": "VMware", "00:50:56": "VMware",
+        "dc:a6:32": "Raspberry Pi", "e4:5f:01": "Raspberry Pi",
+        "b8:27:eb": "Raspberry Pi",
+    }
+    return vendors.get(oui, "Unknown vendor")
+
+
 def lan_inventory():
     if not ENABLE_LAN_DISCOVERY:
         raise PermissionError("LAN discovery is disabled; set ENABLE_LAN_DISCOVERY=1 to enable passive neighbor discovery")
@@ -1083,6 +1116,9 @@ def lan_inventory():
             }
     except (OSError, subprocess.TimeoutExpired):
         pass
+
+    for item in found.values():
+        item["vendor"] = mac_vendor(item.get("mac"))
 
     # Bridge forwarding database is passive L2 evidence. It may expose MACs
     # without an IP; keep those as diagnostics rather than inventing devices.
@@ -1487,6 +1523,8 @@ def _record_network_intelligence(payload):
         cutoff = now - 604800
         _network_intel['samples'] = [x for x in samples if int(x.get('ts', 0)) >= cutoff][-3000:]
         devices = _network_intel.setdefault('devices', {})
+        had_inventory = bool(devices)
+        new_device_alerts = []
         try:
             inventory = lan_inventory()
             for device in inventory.get('items', []):
@@ -1495,17 +1533,21 @@ def _record_network_intelligence(payload):
                 if not ip: continue
                 key = mac or ip
                 old = devices.get(key, {})
-                devices[key] = dict(old, ip=ip, mac=mac or None, hostname=device.get('hostname') or old.get('hostname'), interface=device.get('interface') or old.get('interface'), state=device.get('state') or old.get('state'), first_seen=old.get('first_seen', now), last_seen=now, identity_source='passive ARP/neighbour cache')
+                if had_inventory and not old:
+                    new_device_alerts.append({'ts': now, 'type': 'new_device', 'severity': 'notice', 'ip': ip, 'mac': mac or None, 'vendor': device.get('vendor'), 'message': 'A previously unseen device appeared in the passive neighbor cache.'})
+                devices[key] = dict(old, ip=ip, mac=mac or None, vendor=device.get('vendor') or old.get('vendor'), hostname=device.get('hostname') or old.get('hostname'), interface=device.get('interface') or old.get('interface'), state=device.get('state') or old.get('state'), first_seen=old.get('first_seen', now), last_seen=now, identity_source='passive ARP/neighbour cache')
         except Exception: pass
+        alerts = _network_intel.setdefault('alerts', [])
+        alerts.extend(new_device_alerts)
         previous = _network_intel['samples'][:-1][-20:]
         if len(previous) >= 5:
             rates = sorted(max(float(x.get('rx_bytes_per_sec', 0)), float(x.get('tx_bytes_per_sec', 0))) for x in previous)
             baseline = rates[len(rates) // 2]
             current = max(float(sample['rx_bytes_per_sec']), float(sample['tx_bytes_per_sec']))
-            alerts = _network_intel.setdefault('alerts', [])
-            if current >= 1000000 and current > max(baseline * 10, 5000000) and (not alerts or now - int(alerts[-1].get('ts', 0)) > 300):
+            last_spike = next((item for item in reversed(alerts) if item.get('type') == 'traffic_spike'), None)
+            if current >= 1000000 and current > max(baseline * 10, 5000000) and (not last_spike or now - int(last_spike.get('ts', 0)) > 300):
                 alerts.append({'ts': now, 'type': 'traffic_spike', 'severity': 'notice', 'rate_bytes_per_sec': round(current, 1), 'baseline_bytes_per_sec': round(baseline, 1), 'message': 'Traffic rate is substantially above its recent baseline.'})
-            _network_intel['alerts'] = alerts[-100:]
+        _network_intel['alerts'] = alerts[-100:]
         try: write_private_json(_NETWORK_INTEL_FILE, _network_intel)
         except OSError: pass
 
