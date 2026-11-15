@@ -894,6 +894,7 @@ def api_capabilities():
             "network_diagnostics": True,
             "network_topology": ENABLE_LAN_DISCOVERY,
             "network_traffic": ENABLE_LAN_DISCOVERY and platform.system() == "Linux",
+            "network_quality": ENABLE_LAN_DISCOVERY and platform.system() == "Linux",
             "energy_breakdown": True,
             "energy_forecast": bool(METER and len(METER.hist) >= 3),
             "webhooks": bool(ALERT_WEBHOOK_URL),
@@ -1037,7 +1038,7 @@ def lan_inventory():
         proc = subprocess.run(["ip", "neigh", "show"], capture_output=True, text=True, timeout=2)
         for line in proc.stdout.splitlines():
             cols = line.split()
-            if len(cols) < 2 or not re.fullmatch(r"\\d{1,3}(?:\\.\\d{1,3}){3}", cols[0]):
+            if len(cols) < 2 or not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", cols[0]):
                 continue
             ip = cols[0]
             mac = cols[cols.index("lladdr")+1].lower() if "lladdr" in cols and cols.index("lladdr")+1 < len(cols) else ""
@@ -1090,6 +1091,67 @@ def lan_inventory():
         "unmapped_macs": unmapped_macs[:100],
         "note": "Bridge MAC observations have no IP mapping in the current neighbor cache; they are not counted as IP devices.",
     }
+
+def network_dns_config():
+    """Read DNS resolvers configured on the CasaOS host, not Docker synthetic DNS."""
+    candidates = [
+        ("/hostfs/run/systemd/resolve/resolv.conf", "Host systemd-resolved upstream"),
+        ("/hostfs/run/NetworkManager/no-stub-resolv.conf", "Host NetworkManager upstream"),
+        ("/hostfs/etc/resolv.conf", "Host resolv.conf"),
+        ("/run/systemd/resolve/resolv.conf", "systemd-resolved upstream"),
+        ("/etc/resolv.conf", "Process resolv.conf"),
+    ]
+    local_stubs = {"127.0.0.53", "127.0.0.1", "127.0.0.11", "::1"}
+    seen = set()
+    servers = []
+    selected_source = None
+    search_domains = []
+    for path, source in candidates:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                lines = handle.read().splitlines()
+        except (OSError, UnicodeError):
+            continue
+        parsed = []
+        domains = []
+        for line in lines:
+            fields = line.split("#", 1)[0].split()
+            if len(fields) >= 2 and fields[0] == "nameserver":
+                address = fields[1].strip()
+                try:
+                    ipaddress.ip_address(address)
+                except ValueError:
+                    continue
+                parsed.append(address)
+            elif fields and fields[0] in ("search", "domain"):
+                domains.extend(fields[1:])
+        if not parsed:
+            continue
+        non_stub = [ip for ip in parsed if ip not in local_stubs]
+        if non_stub:
+            selected_source = source
+            search_domains = domains
+            for address in non_stub:
+                if address not in seen:
+                    servers.append({"address": address, "type": "upstream", "source": source})
+                    seen.add(address)
+            break
+        if not servers:
+            selected_source = source
+            search_domains = domains
+            for address in parsed:
+                if address not in seen:
+                    servers.append({"address": address, "type": "local_stub", "source": source})
+                    seen.add(address)
+    return {
+        "servers": servers,
+        "count": len(servers),
+        "source": selected_source,
+        "search_domains": search_domains,
+        "detected": bool(servers),
+        "note": "DNS configuration read from CasaOS host resolver files. This is configured host DNS, not proof every LAN client uses the same resolver.",
+    }
+
 
 def network_topology(inventory):
     """Infer same-subnet gateway associations from the active IPv4 route.
@@ -1237,6 +1299,7 @@ def network_topology(inventory):
         "interface": interface,
         "source_ip": source_ip,
         "subnet": subnet,
+        "dns": network_dns_config(),
         "mode": "inferred-gateway-paths",
         "link_count": len(links),
         "note": note,
@@ -1386,6 +1449,67 @@ def network_traffic_snapshot():
         "recent_peers": sorted(peers.values(),
                                key=lambda item: item["last_seen"], reverse=True)[:40],
         "scope": "IP packets visible on the monitoring server's selected network interface; switched traffic not delivered to this interface cannot be observed.",
+    }
+
+
+def network_quality():
+    """Measure ICMP latency and packet loss to the CasaOS default gateway and a public reachability target."""
+    if not ENABLE_LAN_DISCOVERY:
+        raise PermissionError("Network quality checks require ENABLE_LAN_DISCOVERY=1.")
+
+    gateway = None
+    try:
+        route = subprocess.run(["ip", "-4", "route", "show", "default"],
+                               capture_output=True, text=True, timeout=2)
+        for line in route.stdout.splitlines():
+            columns = line.split()
+            if columns and columns[0] == "default" and "via" in columns:
+                index = columns.index("via")
+                if index + 1 < len(columns):
+                    gateway = columns[index + 1]
+                    break
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    targets = []
+    if gateway:
+        targets.append({"name": "Default gateway", "target": gateway})
+    targets.append({"name": "Internet reachability", "target": "1.1.1.1"})
+
+    results = []
+    for target in targets:
+        item = {**target, "status": "unavailable", "latency_ms": None,
+                "packet_loss_pct": None, "samples": 3}
+        try:
+            probe = subprocess.run(
+                ["ping", "-n", "-c", "3", "-W", "1", target["target"]],
+                capture_output=True, text=True, timeout=6
+            )
+            output = (probe.stdout or "") + "\n" + (probe.stderr or "")
+            loss = re.search(r"(\d+(?:\.\d+)?)%\s*packet loss", output)
+            latency = re.search(
+                r"(?:rtt|round-trip) min/avg/max(?:/(?:mdev|stddev))? = [\d.]+/([\d.]+)/",
+                output
+            )
+            if loss:
+                item["packet_loss_pct"] = float(loss.group(1))
+                item["latency_ms"] = float(latency.group(1)) if latency else None
+                item["status"] = "ok" if item["packet_loss_pct"] < 100 else "unreachable"
+            else:
+                item["error"] = "The ping utility did not return parseable packet statistics."
+        except FileNotFoundError:
+            item["error"] = "The ping utility is not installed in the monitoring environment."
+        except subprocess.TimeoutExpired:
+            item["error"] = "The ICMP probe timed out before statistics were returned."
+        except OSError as exc:
+            item["error"] = "ICMP probe unavailable: " + exc.__class__.__name__
+        results.append(item)
+
+    return {
+        "available": any(item["packet_loss_pct"] is not None for item in results),
+        "method": "ICMP echo, 3 probes per target",
+        "targets": results,
+        "note": "ICMP may be filtered by the router or destination. Unavailable probes do not by themselves prove an outage.",
     }
 
 
@@ -1604,6 +1728,8 @@ class Handler(BaseHTTPRequestHandler):
                 payload = network_topology(lan_inventory())
             elif u.path == "/api/network/traffic":
                 payload = network_traffic_snapshot()
+            elif u.path == "/api/network/quality":
+                payload = network_quality()
             elif u.path == "/api/network/diagnostics":
                 target = parse_qs(u.query).get("target", [""])[0]
                 payload = network_diagnostics(target)
