@@ -14,9 +14,9 @@ services:
     ports:
       - "127.0.0.1:2375:2375"
 
-  server-monitor:
+  allerion-server:
     build: .
-    container_name: server-monitor
+    container_name: allerion-server
     restart: unless-stopped
     network_mode: host
     cap_add:
