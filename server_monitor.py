@@ -1674,8 +1674,17 @@ def _deliver_and_commit_alert(event, active):
         delivered = deliver_alert_event(event)
         if delivered:
             with _ALERT_STATE_LOCK:
+                had_previous = metric in _alert_states
+                previous = _alert_states.get(metric)
                 _alert_states[metric] = bool(active)
-                _persist_alert_states_locked()
+                try:
+                    _persist_alert_states_locked()
+                except Exception:
+                    if had_previous:
+                        _alert_states[metric] = previous
+                    else:
+                        _alert_states.pop(metric, None)
+                    raise
                 _alert_retry_after.pop(metric, None)
         else:
             print("[alerts] delivery not confirmed; will retry " + metric, flush=True)
