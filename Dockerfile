@@ -1,5 +1,5 @@
 FROM python:3.12-slim
-RUN pip install --no-cache-dir psutil tzdata tinytuya cryptography speedtest-cli python-kasa
+RUN pip install --no-cache-dir psutil tzdata tinytuya cryptography speedtest-cli python-kasa firebase-admin
 # Official Ookla Speedtest CLI (replaces the pip "speedtest" command). If this step fails the build
 # continues and the server falls back to the python speedtest-cli package.
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates iproute2 iputils-ping \
@@ -10,4 +10,5 @@ WORKDIR /app
 COPY server_monitor.py .
 COPY console.html .
 COPY jellyfin_analytics.py .
+COPY fcm_notifications.py .
 CMD ["python3", "-u", "server_monitor.py"]
