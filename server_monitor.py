@@ -878,7 +878,35 @@ ALERT_THRESHOLDS = {
     "temp": float(os.environ.get("ALERT_TEMP_THRESHOLD", 85)),
     "disk": float(os.environ.get("ALERT_DISK_THRESHOLD", 92)),
 }
-_alert_states = {}
+ALERT_STATE_FILE = os.path.join(DATA_DIR, "alert_states.json")
+_ALERT_STATE_LOCK = threading.RLock()
+_ALERT_RETRY_SECONDS = 60
+_alert_pending = set()
+_alert_retry_after = {}
+
+
+def _load_alert_states():
+    try:
+        with open(ALERT_STATE_FILE, "r", encoding="utf-8") as handle:
+            saved = json.load(handle)
+        return {str(key): bool(value) for key, value in saved.items()} if isinstance(saved, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _persist_alert_states_locked():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    temporary = ALERT_STATE_FILE + ".tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(_alert_states, handle, sort_keys=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, ALERT_STATE_FILE)
+    os.chmod(ALERT_STATE_FILE, 0o600)
+
+
+_alert_states = _load_alert_states()
 _service_cache = {"at": 0.0, "items": []}
 _service_lock = threading.Lock()
 
@@ -1590,25 +1618,37 @@ def test_alert_webhook():
 
 
 def deliver_alert_event(event):
+    """Deliver to every configured channel; return True only when all configured sends succeed."""
+    attempted = False
+    all_ok = True
     payload = json.dumps(event).encode()
     if ALERT_WEBHOOK_URL:
+        attempted = True
         try:
             parsed = urlparse(ALERT_WEBHOOK_URL)
-            if parsed.scheme == "https" and parsed.hostname:
-                headers = {"Content-Type": "application/json", "User-Agent": "ALLERION/2"}
-                if ALERT_WEBHOOK_SECRET:
-                    headers["X-Webhook-Secret"] = ALERT_WEBHOOK_SECRET
-                req = urllib.request.Request(ALERT_WEBHOOK_URL, data=payload, headers=headers, method="POST")
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    response.read(1024)
-        except Exception:
-            pass
+            if parsed.scheme != "https" or not parsed.hostname:
+                raise RuntimeError("Webhook endpoint must use HTTPS")
+            headers = {"Content-Type": "application/json", "User-Agent": "ALLERION/2"}
+            if ALERT_WEBHOOK_SECRET:
+                headers["X-Webhook-Secret"] = ALERT_WEBHOOK_SECRET
+            req = urllib.request.Request(ALERT_WEBHOOK_URL, data=payload, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if not 200 <= response.status < 300:
+                    raise RuntimeError("Webhook returned HTTP " + str(response.status))
+        except Exception as exc:
+            all_ok = False
+            print("[alerts] webhook delivery failed: " + exc.__class__.__name__, flush=True)
     if fcm_notifications.configured() and fcm_notifications.registered_count():
+        attempted = True
         try:
-            fcm_notifications.send_alert(event)
-        except Exception:
-            pass
+            result = fcm_notifications.send_alert(event)
+            if not result.get("ok") or result.get("sent", 0) < 1:
+                raise RuntimeError("FCM did not confirm delivery to a registered device")
+        except Exception as exc:
+            all_ok = False
+            print("[alerts] FCM delivery failed: " + exc.__class__.__name__, flush=True)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        attempted = True
         try:
             text = ("ALLERION " + ("RECOVERED" if event.get("recovered") else "ALERT") +
                     " · " + str(event.get("server")) + " · " + str(event.get("metric")) +
@@ -1618,9 +1658,34 @@ def deliver_alert_event(event):
             req = urllib.request.Request(url, data=json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": text}).encode(),
                                         headers={"Content-Type": "application/json"}, method="POST")
             with urllib.request.urlopen(req, timeout=5) as response:
-                response.read(1024)
-        except Exception:
-            pass
+                result = json.loads(response.read(100_000).decode())
+            if not result.get("ok"):
+                raise RuntimeError("Telegram did not accept the alert")
+        except Exception as exc:
+            all_ok = False
+            print("[alerts] Telegram delivery failed: " + exc.__class__.__name__, flush=True)
+    return attempted and all_ok
+
+
+def _deliver_and_commit_alert(event, active):
+    metric = event["metric"]
+    delivered = False
+    try:
+        delivered = deliver_alert_event(event)
+        if delivered:
+            with _ALERT_STATE_LOCK:
+                _alert_states[metric] = bool(active)
+                _persist_alert_states_locked()
+                _alert_retry_after.pop(metric, None)
+        else:
+            print("[alerts] delivery not confirmed; will retry " + metric, flush=True)
+    except Exception as exc:
+        print("[alerts] delivery/persistence failed: " + exc.__class__.__name__, flush=True)
+    finally:
+        with _ALERT_STATE_LOCK:
+            _alert_pending.discard(metric)
+            if not delivered:
+                _alert_retry_after[metric] = time.time() + _ALERT_RETRY_SECONDS
 
 
 def evaluate_server_alerts(snapshot):
@@ -1634,18 +1699,22 @@ def evaluate_server_alerts(snapshot):
         ("temp", snapshot.get("temp"), ALERT_THRESHOLDS["temp"]),
         ("disk", max([float(x.get("pct") or 0) for x in snapshot.get("disks", []) if x.get("mounted", True)] or [0]), ALERT_THRESHOLDS["disk"]),
     ]
+    now = time.time()
     for metric, raw_value, threshold in metrics:
         if raw_value is None:
             continue
         active = float(raw_value) >= threshold
-        previous = _alert_states.get(metric, False)
-        if active == previous:
-            continue
-        _alert_states[metric] = active
+        with _ALERT_STATE_LOCK:
+            previous = _alert_states.get(metric, False)
+            if active == previous or metric in _alert_pending:
+                continue
+            if now < _alert_retry_after.get(metric, 0):
+                continue
+            _alert_pending.add(metric)
         event = {"event": "allerion.metric_alert", "server": host, "metric": metric,
                  "value": round(float(raw_value), 1), "threshold": threshold,
                  "recovered": not active, "timestamp": int(time.time()*1000)}
-        threading.Thread(target=deliver_alert_event, args=(event,), daemon=True).start()
+        threading.Thread(target=_deliver_and_commit_alert, args=(event, active), daemon=True).start()
 
 
 def test_telegram():
@@ -1838,6 +1907,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, json.dumps(out), "application/json")
             except Exception as e:
                 self.send(502, json.dumps({"ok": False, "error": "FCM test failed: " + str(e)[:180]}), "application/json")
+        elif u.path == "/api/integrations/fcm/simulate-alert":
+            try:
+                if not fcm_notifications.configured() or fcm_notifications.registered_count() == 0:
+                    raise RuntimeError("FCM is not configured or no devices are registered")
+                event = {"event": "allerion.metric_alert", "server": socket.gethostname(),
+                         "metric": "cpu", "value": 95.0, "threshold": 90.0,
+                         "recovered": False, "simulated": True, "timestamp": int(time.time()*1000)}
+                out = fcm_notifications.send_alert(event)
+                if not out.get("ok") or out.get("sent", 0) < 1:
+                    raise RuntimeError("FCM did not confirm delivery to a registered device")
+                self.send(200, json.dumps({"ok": True, "simulated": True, **out}), "application/json")
+            except Exception as e:
+                self.send(502, json.dumps({"ok": False, "error": "Simulated alert failed: " + str(e)[:180]}), "application/json")
         else:
             self.send(404, "Not found", "text/plain")
 
