@@ -1489,7 +1489,7 @@ def _record_network_intelligence(payload):
         devices = _network_intel.setdefault('devices', {})
         try:
             inventory = lan_inventory()
-            for device in inventory.get('nodes', []):
+            for device in inventory.get('items', []):
                 ip = str(device.get('ip') or '')
                 mac = str(device.get('mac') or '').lower()
                 if not ip: continue
