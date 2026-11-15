@@ -1439,10 +1439,9 @@ def _ensure_network_traffic_capture():
 
 def network_traffic_snapshot():
     if not ENABLE_LAN_DISCOVERY:
-        raise PermissionError("Live network traffic requires ENABLE_LAN_DISCOVERY=1.")
-    if platform.system() != "Linux" or not hasattr(socket, "AF_PACKET"):
-        payload = {"available": False, "status": "unsupported",
-                "error": "Live packet capture requires Linux AF_PACKET support."}
+        raise PermissionError('Live network traffic requires ENABLE_LAN_DISCOVERY=1.')
+    if platform.system() != 'Linux' or not hasattr(socket, 'AF_PACKET'):
+        return {'available': False, 'status': 'unsupported', 'error': 'Live packet capture requires Linux AF_PACKET support.'}
     _ensure_network_traffic_capture()
     now = time.time()
     with _traffic_lock:
@@ -1451,37 +1450,23 @@ def network_traffic_snapshot():
     peers = {}
     rx_bytes = tx_bytes = 0
     for at, peer, direction, size, src, dst in events:
-        row = peers.setdefault(peer, {"ip": peer, "packets": 0,
-                                      "rx_bytes": 0, "tx_bytes": 0,
-                                      "last_seen": at})
-        row["packets"] += 1
-        row[direction + "_bytes"] += size
-        row["last_seen"] = max(row["last_seen"], at)
-        if direction == "rx":
-            rx_bytes += size
-        else:
-            tx_bytes += size
-    return {
-        "available": state.get("status") == "active",
-        "status": state.get("status"),
-        "interface": state.get("interface"),
-        "error": state.get("error"),
-        "packet_count": state.get("packet_count", 0),
-        "last_packet_age_ms": int(max(0, now - state["last_packet_at"]) * 1000)
-                              if state.get("last_packet_at") else None,
-        "active_peer": state.get("last_packet_peer"),
-        "last_src": state.get("last_src"),
-        "last_dst": state.get("last_dst"),
-        "last_direction": state.get("last_direction"),
-        "rx_bytes_per_sec": round(rx_bytes / 3.0, 1),
-        "tx_bytes_per_sec": round(tx_bytes / 3.0, 1),
-        "recent_peers": sorted(peers.values(),
-                               key=lambda item: item["last_seen"], reverse=True)[:40],
-        "scope": "IP packets visible on the monitoring server's selected network interface; switched traffic not delivered to this interface cannot be observed.",
-    }
+        row = peers.setdefault(peer, {'ip': peer, 'packets': 0, 'rx_bytes': 0, 'tx_bytes': 0, 'last_seen': at})
+        row['packets'] += 1
+        row[direction + '_bytes'] += size
+        row['last_seen'] = max(row['last_seen'], at)
+        if direction == 'rx': rx_bytes += size
+        else: tx_bytes += size
+    payload = {'available': state.get('status') == 'active', 'status': state.get('status'),
+        'interface': state.get('interface'), 'error': state.get('error'),
+        'packet_count': state.get('packet_count', 0),
+        'last_packet_age_ms': int(max(0, now - state['last_packet_at']) * 1000) if state.get('last_packet_at') else None,
+        'active_peer': state.get('last_packet_peer'), 'last_src': state.get('last_src'),
+        'last_dst': state.get('last_dst'), 'last_direction': state.get('last_direction'),
+        'rx_bytes_per_sec': round(rx_bytes / 3.0, 1), 'tx_bytes_per_sec': round(tx_bytes / 3.0, 1),
+        'recent_peers': sorted(peers.values(), key=lambda item: item['last_seen'], reverse=True)[:40],
+        'scope': "IP packets visible on the monitoring server's selected network interface; switched traffic not delivered to this interface cannot be observed."}
     _record_network_intelligence(payload)
     return payload
-
 
 _NETWORK_INTEL_FILE = os.path.join(DATA_DIR, 'network_intelligence.json')
 _network_intel_lock = threading.Lock()
