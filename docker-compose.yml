@@ -43,6 +43,8 @@ services:
       ALERT_WEBHOOK_SECRET: ${ALERT_WEBHOOK_SECRET:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
+      FCM_SERVICE_ACCOUNT_FILE: /run/secrets/firebase-service-account.json
       ALERT_CPU_THRESHOLD: ${ALERT_CPU_THRESHOLD:-90}
       ALERT_RAM_THRESHOLD: ${ALERT_RAM_THRESHOLD:-90}
       ALERT_TEMP_THRESHOLD: ${ALERT_TEMP_THRESHOLD:-85}
@@ -50,3 +52,4 @@ services:
     volumes:
       - /:/hostfs:ro,rslave
       - ./data:/data
+      - ./secrets:/run/secrets:ro
