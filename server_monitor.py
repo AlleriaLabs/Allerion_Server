@@ -9,6 +9,7 @@ import calendar, glob, json, os, socket, subprocess, threading, time, platform, 
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import psutil
+import jellyfin_analytics
 from collections import deque
 from datetime import datetime, timedelta, timezone
 try:
@@ -1552,7 +1553,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send(401, '{"error":"unauthorized"}', "application/json")
             return
         try:
-            if u.path == "/api/speedtest/servers":
+            if u.path == "/api/jellyfin/analytics":
+                period = parse_qs(u.query).get("period", ["week"])[0].lower()
+                if period not in ("day", "week", "month", "year"):
+                    raise ValueError("period must be day, week, month or year")
+                payload = jellyfin_analytics.report(period)
+            elif u.path == "/api/speedtest/servers":
                 payload = list_ookla_servers()
             elif u.path == "/api/stats":
                 payload = stats
@@ -1668,6 +1674,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     threading.Thread(target=collector, daemon=True).start()
+    jellyfin_analytics.start()
     # Automatic speed tests remain disabled; manual tests are available in the app.
     try:
         ip = socket.gethostbyname(socket.gethostname())
