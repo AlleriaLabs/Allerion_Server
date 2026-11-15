@@ -8,5 +8,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
  && apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY server_monitor.py .
+COPY console.html .
 COPY jellyfin_analytics.py .
 CMD ["python3", "-u", "server_monitor.py"]

@@ -1548,6 +1548,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, '{"status":"ok"}', "application/json")
             return
         if u.path == "/":
+            try:
+                with open(os.path.join(os.path.dirname(__file__), "console.html"), encoding="utf-8") as handle:
+                    self.send(200, handle.read(), "text/html; charset=utf-8")
+            except OSError:
+                self.send(503, "Allerion Console UI is not installed", "text/plain; charset=utf-8")
+            return
+        if u.path == "/monitor":
             self.send(200, PAGE, "text/html; charset=utf-8")
             return
         if u.path == "/manifest.json":
