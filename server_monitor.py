@@ -1338,6 +1338,60 @@ def network_topology(inventory):
 # --- Live packet metadata collector (Linux AF_PACKET; payloads are never read) ---
 _traffic_lock = threading.Lock()
 _traffic_events = deque(maxlen=4096)
+_network_history_lock = threading.Lock()
+_NETWORK_HISTORY_FILE = os.path.join(DATA_DIR, "network_traffic_history.json")
+_network_history = deque(maxlen=8640)
+_network_history_last_saved = 0.0
+
+
+def _load_network_history():
+    try:
+        with open(_NETWORK_HISTORY_FILE, encoding="utf-8") as handle:
+            rows = json.load(handle)
+        cutoff = time.time() - 86400
+        for row in rows[-8640:]:
+            if isinstance(row, dict) and isinstance(row.get("ts"), (int, float)) and row["ts"] >= cutoff:
+                _network_history.append(row)
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def _record_network_sample(sample):
+    global _network_history_last_saved
+    now = time.time()
+    with _network_history_lock:
+        if _network_history and now - _network_history[-1]["ts"] < 10:
+            return
+        _network_history.append(sample)
+        if now - _network_history_last_saved < 60:
+            return
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            temporary = _NETWORK_HISTORY_FILE + ".tmp"
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(list(_network_history), handle, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, _NETWORK_HISTORY_FILE)
+            os.chmod(_NETWORK_HISTORY_FILE, 0o600)
+            _network_history_last_saved = now
+        except OSError:
+            pass
+
+
+def network_traffic_history(hours=24):
+    if not ENABLE_LAN_DISCOVERY:
+        raise PermissionError("Network traffic history requires ENABLE_LAN_DISCOVERY=1.")
+    hours = max(1, min(int(hours), 24))
+    cutoff = time.time() - hours * 3600
+    with _network_history_lock:
+        rows = [row for row in _network_history if row.get("ts", 0) >= cutoff]
+    return {"available": True, "hours": hours, "interval_seconds": 10,
+            "count": len(rows), "samples": rows,
+            "note": "History records metadata rates visible on the monitoring host interface only; it is not a complete LAN traffic ledger."}
+
+
+_load_network_history()
 _traffic_state = {
     "status": "stopped", "interface": None, "source_ip": None,
     "error": None, "packet_count": 0, "last_packet_at": None,
@@ -1461,6 +1515,12 @@ def network_traffic_snapshot():
             rx_bytes += size
         else:
             tx_bytes += size
+    sample = {"ts": int(now), "rx_bytes_per_sec": round(rx_bytes / 3.0, 1),
+              "tx_bytes_per_sec": round(tx_bytes / 3.0, 1),
+              "packets_per_sec": round(sum(row["packets"] for row in peers.values()) / 3.0, 2),
+              "active_peers": len(peers)}
+    if state.get("status") == "active":
+        _record_network_sample(sample)
     return {
         "available": state.get("status") == "active",
         "status": state.get("status"),
@@ -1817,6 +1877,8 @@ class Handler(BaseHTTPRequestHandler):
                 payload = network_topology(lan_inventory())
             elif u.path == "/api/network/traffic":
                 payload = network_traffic_snapshot()
+            elif u.path == "/api/network/history":
+                payload = network_traffic_history(parse_qs(u.query).get("hours", ["24"])[0])
             elif u.path == "/api/network/quality":
                 payload = network_quality()
             elif u.path == "/api/network/diagnostics":
