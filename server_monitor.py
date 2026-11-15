@@ -10,6 +10,7 @@ from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import psutil
 import jellyfin_analytics
+import fcm_notifications
 from collections import deque
 from datetime import datetime, timedelta, timezone
 try:
@@ -1566,6 +1567,9 @@ def integration_status():
         {"name": "webhook", "configured": bool(ALERT_WEBHOOK_URL), "enabled": bool(ALERT_WEBHOOK_URL)},
         {"name": "telegram", "configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
          "enabled": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)},
+        {"name": "fcm", "configured": fcm_notifications.configured(),
+         "enabled": fcm_notifications.configured() and fcm_notifications.registered_count() > 0,
+         "devices": fcm_notifications.registered_count()},
     ]}
 
 
@@ -1599,6 +1603,11 @@ def deliver_alert_event(event):
                     response.read(1024)
         except Exception:
             pass
+    if fcm_notifications.configured() and fcm_notifications.registered_count():
+        try:
+            fcm_notifications.send_alert(event)
+        except Exception:
+            pass
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         try:
             text = ("ALLERION " + ("RECOVERED" if event.get("recovered") else "ALERT") +
@@ -1615,7 +1624,8 @@ def deliver_alert_event(event):
 
 
 def evaluate_server_alerts(snapshot):
-    if not ALERT_WEBHOOK_URL and not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
+    if (not ALERT_WEBHOOK_URL and not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+            and not (fcm_notifications.configured() and fcm_notifications.registered_count())):
         return
     host = str(snapshot.get("host") or socket.gethostname())
     metrics = [
@@ -1759,9 +1769,26 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(401, '{"error":"unauthorized"}', "application/json")
         try:
             n = int(self.headers.get("Content-Length") or 0)
-            body = clean_cfg(json.loads(self.rfile.read(n) or b"{}"))
-        except ValueError:
+            raw_body = json.loads(self.rfile.read(n) or b"{}")
+            if not isinstance(raw_body, dict):
+                raise ValueError("JSON object required")
+        except (ValueError, TypeError):
             return self.send(400, '{"error":"bad request"}', "application/json")
+        if u.path == "/api/notifications/fcm/register":
+            try:
+                out = fcm_notifications.register_device(raw_body.get("token"))
+                return self.send(200, json.dumps(out), "application/json")
+            except ValueError as exc:
+                return self.send(400, json.dumps({"ok": False, "error": str(exc)}), "application/json")
+            except Exception as exc:
+                return self.send(503, json.dumps({"ok": False, "error": str(exc)[:180]}), "application/json")
+        elif u.path == "/api/notifications/fcm/unregister":
+            try:
+                out = fcm_notifications.unregister_device(raw_body.get("token"))
+                return self.send(200, json.dumps(out), "application/json")
+            except ValueError as exc:
+                return self.send(400, json.dumps({"ok": False, "error": str(exc)}), "application/json")
+        body = clean_cfg(raw_body)
         for secret in ("tuya_key", "tapo_pass"):
             if body.get(secret) == "":
                 body.pop(secret)            # empty means keep the saved secret
@@ -1805,6 +1832,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, json.dumps(out), "application/json")
             except Exception as e:
                 self.send(502, json.dumps({"ok": False, "error": "Telegram test failed: " + e.__class__.__name__}), "application/json")
+        elif u.path == "/api/integrations/fcm/test":
+            try:
+                out = fcm_notifications.send_test()
+                self.send(200, json.dumps(out), "application/json")
+            except Exception as e:
+                self.send(502, json.dumps({"ok": False, "error": "FCM test failed: " + str(e)[:180]}), "application/json")
         else:
             self.send(404, "Not found", "text/plain")
 
