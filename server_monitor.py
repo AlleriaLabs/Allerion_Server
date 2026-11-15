@@ -1680,6 +1680,7 @@ def _deliver_and_commit_alert(event, active):
         else:
             print("[alerts] delivery not confirmed; will retry " + metric, flush=True)
     except Exception as exc:
+        delivered = False
         print("[alerts] delivery/persistence failed: " + exc.__class__.__name__, flush=True)
     finally:
         with _ALERT_STATE_LOCK:
