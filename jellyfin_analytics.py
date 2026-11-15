@@ -110,8 +110,19 @@ def report(period="week", metric="users"):
     with connect() as db:
         # Daily unique users and peak simultaneous sampled sessions.
         points=[]
-        for row in db.execute("SELECT day,COUNT(DISTINCT user_id) users,MAX(n) peak FROM (SELECT day,ts,COUNT(DISTINCT user_id) n FROM samples WHERE ts>=? GROUP BY day,ts) GROUP BY day ORDER BY day",(since,)):
-            points.append(dict(row))
+        daily_users = db.execute(
+            "SELECT day,COUNT(DISTINCT user_id) users FROM samples WHERE ts>=? GROUP BY day",
+            (since,)
+        ).fetchall()
+        daily_peaks = db.execute(
+            "SELECT day,MAX(n) peak FROM (SELECT day,ts,COUNT(DISTINCT user_id) n "
+            "FROM samples WHERE ts>=? GROUP BY day,ts) GROUP BY day",
+            (since,)
+        ).fetchall()
+        peak_by_day = {row["day"]: row["peak"] for row in daily_peaks}
+        for row in daily_users:
+            points.append({"day": row["day"], "users": row["users"],
+                           "peak": peak_by_day.get(row["day"], 0)})
         movies=[dict(r) for r in db.execute("""SELECT item_id id, item_name title, series_name,
           COUNT(DISTINCT session_id || ':' || item_id) plays, ROUND(SUM(CASE WHEN state='playing' THEN 1 ELSE 0 END)*? / 60.0,1) watch_minutes
           FROM samples WHERE ts>=? AND item_id IS NOT NULL AND item_type='Movie'
