@@ -1666,6 +1666,36 @@ def energy_forecast(days=30):
 
 
 def integration_status():
+    # Detect app services from Docker metadata on this host. This is deliberately
+    # read-only: no container is started, stopped, or modified.
+    detected = {
+        "jellyfin": {"name": "jellyfin", "configured": False, "enabled": False, "source": "docker"},
+        "jfa-go": {"name": "jfa-go", "configured": False, "enabled": False, "source": "docker"},
+        "seerr": {"name": "seerr", "configured": False, "enabled": False, "source": "docker"},
+    }
+    try:
+        containers = container_inventory().get("items", [])
+        for container in containers:
+            identity = " ".join(str(container.get(key) or "") for key in ("name", "image")).lower()
+            state = str(container.get("state") or "").lower()
+            running = state == "running"
+            aliases = {
+                "jellyfin": ("jellyfin",),
+                "jfa-go": ("jfa-go", "jfago", "jfa_go"),
+                "seerr": ("seerr", "jellyseerr"),
+            }
+            for integration, terms in aliases.items():
+                if any(term in identity for term in terms):
+                    detected[integration]["configured"] = True
+                    detected[integration]["enabled"] = detected[integration]["enabled"] or running
+                    detected[integration].setdefault("containers", []).append({
+                        "name": container.get("name", ""),
+                        "state": state,
+                    })
+    except Exception as exc:
+        # Preserve existing notification integrations even when Docker is unavailable.
+        print("[integrations] Docker discovery unavailable: " + exc.__class__.__name__, flush=True)
+
     return {"items": [
         {"name": "webhook", "configured": bool(ALERT_WEBHOOK_URL), "enabled": bool(ALERT_WEBHOOK_URL)},
         {"name": "telegram", "configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
@@ -1673,6 +1703,7 @@ def integration_status():
         {"name": "fcm", "configured": fcm_notifications.configured(),
          "enabled": fcm_notifications.configured() and fcm_notifications.registered_count() > 0,
          "devices": fcm_notifications.registered_count()},
+        *detected.values(),
     ]}
 
 
