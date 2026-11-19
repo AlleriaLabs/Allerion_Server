@@ -924,6 +924,7 @@ def api_capabilities():
             "network_topology": ENABLE_LAN_DISCOVERY,
             "network_traffic": ENABLE_LAN_DISCOVERY and platform.system() == "Linux",
             "network_quality": ENABLE_LAN_DISCOVERY and platform.system() == "Linux",
+            "jellyfin_analytics": bool(jellyfin_analytics.URL and jellyfin_analytics.KEY),
             "energy_breakdown": True,
             "energy_forecast": bool(METER and len(METER.hist) >= 3),
             "webhooks": bool(ALERT_WEBHOOK_URL),
