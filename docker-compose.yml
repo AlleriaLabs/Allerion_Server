@@ -16,6 +16,7 @@ services:
 
   allerion-server:
     image: ${ALLERION_IMAGE:-ghcr.io/allerialabs/allerion-server:latest}
+    build: .
     container_name: allerion-server
     restart: unless-stopped
     network_mode: host
