@@ -15,6 +15,7 @@ services:
       - "127.0.0.1:2375:2375"
 
   allerion-server:
+    image: ${ALLERION_IMAGE:-ghcr.io/allerialabs/allerion-server:latest}
     build: .
     container_name: allerion-server
     restart: unless-stopped
@@ -25,20 +26,20 @@ services:
     depends_on:
       - docker-socket-proxy
     environment:
-      TOKEN: ${TOKEN:?Set TOKEN in the .env file}
-      LEGACY_TOKEN_AUTH: ${LEGACY_TOKEN_AUTH:-true}
-      PORT: "8081"
+      TOKEN: ${TOKEN:?Installer must generate TOKEN in .env}
+      LEGACY_TOKEN_AUTH: ${LEGACY_TOKEN_AUTH:-false}
+      PORT: ${PORT:-8081}
       SPEEDTEST_MINUTES: "30"
-      TZ: "Asia/Manila"
+      TZ: ${TZ:-Asia/Manila}
       DATA_DIR: "/data"
-      PRICE_PER_KWH: "0"
-      CURRENCY: "PHP"
+      PRICE_PER_KWH: ${PRICE_PER_KWH:-0}
+      CURRENCY: ${CURRENCY:-PHP}
       JELLYFIN_URL: ${JELLYFIN_URL:-}
       JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:-}
       JELLYFIN_ANALYTICS_INTERVAL: ${JELLYFIN_ANALYTICS_INTERVAL:-60}
-      BASE_WATTS: "0"
+      BASE_WATTS: ${BASE_WATTS:-0}
       DOCKER_API_URL: "http://127.0.0.1:2375"
-      ENABLE_LAN_DISCOVERY: "1"
+      ENABLE_LAN_DISCOVERY: ${ENABLE_LAN_DISCOVERY:-1}
       SERVICE_CHECKS: ${SERVICE_CHECKS:-}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
       ALERT_WEBHOOK_SECRET: ${ALERT_WEBHOOK_SECRET:-}

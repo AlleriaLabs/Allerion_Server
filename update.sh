@@ -10,5 +10,10 @@ BRANCH="$(git branch --show-current)"
 bash ./backup.sh
 git fetch origin main
 git merge --ff-only origin/main
-docker compose up -d --build
+# Pull before recreating so a failed download leaves the currently running container untouched.
+if ! docker compose pull; then
+  echo "Published image could not be pulled; building from the updated source checkout instead."
+  docker compose build
+fi
+docker compose up -d --remove-orphans
 echo "Update complete. Check docker compose ps and logs."
