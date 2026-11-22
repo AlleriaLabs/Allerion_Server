@@ -11,6 +11,9 @@ bash ./backup.sh
 git fetch origin main
 git merge --ff-only origin/main
 # Pull before recreating so a failed download leaves the currently running container untouched.
-docker compose pull
+if ! docker compose pull; then
+  echo "Published image could not be pulled; building from the updated source checkout instead."
+  docker compose build
+fi
 docker compose up -d --remove-orphans
 echo "Update complete. Check docker compose ps and logs."
