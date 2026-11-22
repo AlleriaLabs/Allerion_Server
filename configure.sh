@@ -7,27 +7,26 @@ chmod 600 .env
 
 set_env() {
   local key="$1" value="$2"
-  printf '%s' "$value" | python3 - "$key" <<'PY'
+  printf '%s' "$value" | python3 -c '
 import os, pathlib, sys
-key = sys.argv[1]
+key = sys.argv[1] + "="
 value = sys.stdin.read()
 path = pathlib.Path(".env")
 lines = path.read_text().splitlines()
-prefix = key + "="
-updated = False
 out = []
+updated = False
 for line in lines:
-    if line.startswith(prefix):
+    if line.startswith(key):
         if not updated:
-            out.append(prefix + value)
+            out.append(key + value)
             updated = True
     else:
         out.append(line)
 if not updated:
-    out.append(prefix + value)
+    out.append(key + value)
 path.write_text("\n".join(out) + "\n")
 os.chmod(path, 0o600)
-PY
+' "$key"
 }
 
 echo "Allerion optional integration setup"
