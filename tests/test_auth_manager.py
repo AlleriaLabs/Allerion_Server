@@ -25,6 +25,14 @@ class AuthManagerTests(unittest.TestCase):
         self.assertEqual(actor["username"], "owner")
         self.assertEqual(actor["role"], "admin")
 
+    def test_session_revocation(self):
+        session = self.auth.create_first_admin("owner", "long-enough-password", self.bootstrap, self.bootstrap)
+        token = session["access_token"]
+        self.assertIsNotNone(self.auth.authenticate(token))
+        self.assertTrue(self.auth.revoke(token))
+        self.assertIsNone(self.auth.authenticate(token))
+        self.assertFalse(self.auth.revoke(token))
+
     def test_passwords_are_not_stored_and_bad_login_fails(self):
         self.auth.create_first_admin("owner", "long-enough-password", self.bootstrap, self.bootstrap)
         with self.assertRaises(PermissionError):
