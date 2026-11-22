@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TOKEN: allerion-ci-smoke-token
+      LEGACY_TOKEN_AUTH: "true"
     steps:
       - uses: actions/checkout@v4
 
