@@ -7,7 +7,7 @@ docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is required.
 [[ -d .git ]] || { echo "This install is not a Git checkout." >&2; exit 1; }
 BRANCH="$(git branch --show-current)"
 [[ "$BRANCH" == "main" ]] || { echo "Refusing update from branch $BRANCH; use main." >&2; exit 1; }
-./backup.sh
+bash ./backup.sh
 git fetch origin main
 git merge --ff-only origin/main
 docker compose up -d --build
