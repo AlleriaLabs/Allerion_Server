@@ -25,6 +25,8 @@ if [[ -d "$APP_DIR/.git" ]]; then
   cd "$APP_DIR"
   [[ -f backup.sh ]] && bash ./backup.sh
   [[ "$(git branch --show-current)" == "main" ]] || fail "Existing checkout is not on main. Switch it to main before running this installer."
+  # These tracked scripts are invoked through bash; normalize execute bits left by older installers.
+  chmod 644 install.sh backup.sh update.sh configure.sh uninstall.sh 2>/dev/null || true
   git fetch origin main
   git merge --ff-only origin/main || fail "Local source changes prevent a safe update. No local configuration or data was deleted."
 elif [[ -d "$APP_DIR" ]] && [[ -n "$(find "$APP_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
@@ -33,7 +35,6 @@ else
   git clone --branch main --depth 1 "$REPO" "$APP_DIR"
 fi
 cd "$APP_DIR"
-chmod 700 install.sh backup.sh update.sh uninstall.sh configure.sh 2>/dev/null || true
 mkdir -p data secrets backups
 chmod 700 data secrets backups
 
