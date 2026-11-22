@@ -11,6 +11,10 @@ Python backend for the Allerion home/server monitoring Android app.
 - Webhook and Telegram alert integrations
 - Existing power-monitoring integrations (Tuya/Smart Life, Tapo, Shelly and Tasmota)
 
+## Self-hosted install
+
+For the guided Linux installer, supported platforms, safe upgrades, backups and security guidance, see [docs/INSTALLATION.md](docs/INSTALLATION.md). The installer supports x86_64 and ARM64 Docker hosts and preserves existing `.env`, `data/` and `secrets/` files.
+
 ## Quick start (Docker Compose)
 1. Copy `.env.example` to `.env`.
 2. Set `TOKEN` to a long, unique random secret. Never commit `.env`.
