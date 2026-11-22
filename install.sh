@@ -21,7 +21,12 @@ command -v python3 >/dev/null || fail "Python 3 is required for the local health
 info "Preparing $APP_DIR"
 mkdir -p "$(dirname "$APP_DIR")"
 if [[ -d "$APP_DIR/.git" ]]; then
-  info "Existing Git checkout detected; preserving configuration and data."
+  info "Existing Allerion checkout detected; backing up and updating application files."
+  cd "$APP_DIR"
+  [[ -f backup.sh ]] && bash ./backup.sh
+  [[ "$(git branch --show-current)" == "main" ]] || fail "Existing checkout is not on main. Switch it to main before running this installer."
+  git fetch origin main
+  git merge --ff-only origin/main || fail "Local source changes prevent a safe update. No local configuration or data was deleted."
 elif [[ -d "$APP_DIR" ]] && [[ -n "$(find "$APP_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
   fail "$APP_DIR is non-empty and is not an Allerion Git checkout. Nothing was overwritten."
 else
@@ -65,7 +70,6 @@ else
   info "Existing .env preserved."
 fi
 
-# Use the published multi-architecture image; no source build or manual Docker setup is needed.
 docker compose pull
 docker compose up -d --remove-orphans
 
