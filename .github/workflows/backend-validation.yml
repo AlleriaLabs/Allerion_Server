@@ -37,7 +37,7 @@ jobs:
           import re
           from pathlib import Path
           html = Path("console.html").read_text()
-          match = re.search(r"<script>([\\s\\S]*?)</script>", html)
+          match = re.search(r"<script>([\s\S]*?)</script>", html)
           assert match, "console script block not found"
           Path("/tmp/allerion-console.js").write_text(match.group(1))
           PY
