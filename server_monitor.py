@@ -1968,6 +1968,8 @@ class Handler(BaseHTTPRequestHandler):
                 payload = energy_forecast(parse_qs(u.query).get("days", ["30"])[0])
             elif u.path == "/api/integrations":
                 payload = integration_status()
+            elif u.path == "/api/auth/users":
+                payload = AUTH.list_users(self.auth_user)
             else:
                 self.send(404, "Not found", "text/plain")
                 return
@@ -2029,12 +2031,6 @@ class Handler(BaseHTTPRequestHandler):
             # Sessions naturally expire after 30 days. Client-side logout drops
             # the bearer token; no secret is ever returned in the response.
             return self.send(200, '{"ok":true}', "application/json")
-        if u.path == "/api/auth/users":
-            try:
-                out = AUTH.list_users(self.auth_user)
-                return self.send(200, json.dumps(out), "application/json")
-            except PermissionError as exc:
-                return self.send(403, json.dumps({"error": str(exc)}), "application/json")
         if u.path == "/api/notifications/fcm/register":
             try:
                 out = fcm_notifications.register_device(raw_body.get("token"))
