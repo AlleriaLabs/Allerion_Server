@@ -70,7 +70,10 @@ else
   info "Existing .env preserved."
 fi
 
-docker compose pull
+if ! docker compose pull; then
+  info "Published image could not be pulled; building from the public source checkout instead."
+  docker compose build
+fi
 docker compose up -d --remove-orphans
 
 PORT_VALUE="$(sed -n 's/^PORT=//p' .env | tail -n 1)"
