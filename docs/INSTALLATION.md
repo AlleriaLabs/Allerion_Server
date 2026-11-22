@@ -13,7 +13,7 @@ Windows/macOS and non-Docker deployments are not supported by this installer.
 
 ## One-command install
 
-Install Docker Engine and Docker Compose v2 first. Then run this single command as an administrator:
+Install Docker Engine and Docker Compose v2 first. The installer also requires Git, OpenSSL and Python 3 (normally available on supported Linux distributions). Then run this single command as an administrator:
 
     curl -fsSL https://raw.githubusercontent.com/AlleriaLabs/Allerion_Server/main/install.sh | sudo bash
 
