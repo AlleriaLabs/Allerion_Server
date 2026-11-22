@@ -1,0 +1,5 @@
+# Replace with a DNS name pointing to this server.
+allerion.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8081
+}

@@ -5,10 +5,11 @@ Setup:   pip install psutil
 Run:     TOKEN=choose-a-secret python3 server_monitor.py
 Phone:   open http://<server-ip>:8080 in Chrome, then menu > Add to Home screen
 """
-import calendar, glob, json, os, socket, subprocess, threading, time, platform, urllib.request, ipaddress, http.client, re
+import calendar, glob, json, os, socket, subprocess, threading, time, platform, urllib.request, ipaddress, http.client, re, hmac
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import psutil
+import auth_manager
 import jellyfin_analytics
 import fcm_notifications
 from collections import deque
@@ -28,6 +29,10 @@ PING_TARGET = ("1.1.1.1", 443)
 
 # --- power settings (all optional) ---
 DATA_DIR = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+AUTH = auth_manager.AuthManager(DATA_DIR)
+LEGACY_TOKEN_AUTH = os.environ.get('LEGACY_TOKEN_AUTH', 'true').strip().lower() in ('1', 'true', 'yes', 'on')
+_AUTH_LOGIN_FAILURES = {}
+_AUTH_LOGIN_LOCK = threading.Lock()
 BASE_WATTS = float(os.environ.get("BASE_WATTS", 0))   # extra draw the CPU reading cannot see (board, drives, fans)
 PRICE = float(os.environ.get("PRICE_PER_KWH", 0))
 CURRENCY = os.environ.get("CURRENCY", "")
@@ -1875,9 +1880,20 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def authed(self, u):
-        # Header-only auth avoids leaking credentials into URL logs, browser history and referrers.
+        # New clients use revocable Bearer sessions. X-Token remains supported for
+        # existing installs and one-time first-admin bootstrap.
+        authorization = self.headers.get("Authorization", "")
+        if authorization.startswith("Bearer "):
+            self.auth_user = AUTH.authenticate(authorization[7:].strip())
+            return self.auth_user is not None
         given = self.headers.get("X-Token", "")
-        return bool(TOKEN) and given == TOKEN
+        # Preserve existing installations by default. New installs disable this
+        # after first-admin setup; TOKEN remains valid for setup only.
+        if LEGACY_TOKEN_AUTH and TOKEN and hmac.compare_digest(given, TOKEN):
+            self.auth_user = {"id": 0, "username": "legacy-token", "role": "admin"}
+            return True
+        self.auth_user = None
+        return False
 
     def do_GET(self):
         u = urlparse(self.path)
@@ -1899,6 +1915,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/icon.svg":
             self.send(200, ICON, "image/svg+xml")
+            return
+        if u.path == "/api/auth/status":
+            self.send(200, json.dumps(AUTH.status()), "application/json")
             return
         if not self.authed(u):
             self.send(401, '{"error":"unauthorized"}', "application/json")
@@ -1954,6 +1973,8 @@ class Handler(BaseHTTPRequestHandler):
                 payload = energy_forecast(parse_qs(u.query).get("days", ["30"])[0])
             elif u.path == "/api/integrations":
                 payload = integration_status()
+            elif u.path == "/api/auth/users":
+                payload = AUTH.list_users(self.auth_user)
             else:
                 self.send(404, "Not found", "text/plain")
                 return
@@ -1970,15 +1991,64 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
-        if not self.authed(u):
-            return self.send(401, '{"error":"unauthorized"}', "application/json")
         try:
             n = int(self.headers.get("Content-Length") or 0)
+            if n < 0 or n > 65536:
+                raise ValueError("Request body too large")
             raw_body = json.loads(self.rfile.read(n) or b"{}")
             if not isinstance(raw_body, dict):
                 raise ValueError("JSON object required")
         except (ValueError, TypeError):
             return self.send(400, '{"error":"bad request"}', "application/json")
+
+        # Public password-auth endpoints. First-admin setup is protected by the
+        # existing .env token exactly once; subsequent logins use named accounts.
+        if u.path == "/api/auth/setup":
+            try:
+                result = AUTH.create_first_admin(raw_body.get("username"), raw_body.get("password"),
+                                                 raw_body.get("setup_token"), TOKEN)
+                return self.send(201, json.dumps(result), "application/json")
+            except PermissionError as exc:
+                return self.send(403, json.dumps({"error": str(exc)}), "application/json")
+            except ValueError as exc:
+                return self.send(400, json.dumps({"error": str(exc)}), "application/json")
+        if u.path == "/api/auth/login":
+            client_ip = self.client_address[0] if self.client_address else "unknown"
+            now = time.time()
+            with _AUTH_LOGIN_LOCK:
+                attempts = [stamp for stamp in _AUTH_LOGIN_FAILURES.get(client_ip, []) if now - stamp < 900]
+                if len(attempts) >= 10:
+                    _AUTH_LOGIN_FAILURES[client_ip] = attempts
+                    return self.send(429, '{"error":"Too many sign-in attempts. Try again in 15 minutes."}', "application/json")
+            try:
+                result = AUTH.login(raw_body.get("username"), raw_body.get("password"))
+                with _AUTH_LOGIN_LOCK:
+                    _AUTH_LOGIN_FAILURES.pop(client_ip, None)
+                return self.send(200, json.dumps(result), "application/json")
+            except PermissionError:
+                with _AUTH_LOGIN_LOCK:
+                    attempts.append(now)
+                    _AUTH_LOGIN_FAILURES[client_ip] = attempts
+                return self.send(401, '{"error":"Invalid username or password"}', "application/json")
+            except ValueError as exc:
+                return self.send(400, json.dumps({"error": str(exc)}), "application/json")
+
+        if not self.authed(u):
+            return self.send(401, '{"error":"unauthorized"}', "application/json")
+        if u.path == "/api/auth/users":
+            try:
+                result = AUTH.create_user(self.auth_user, raw_body.get("username"),
+                                          raw_body.get("password"), raw_body.get("role", "user"))
+                return self.send(201, json.dumps(result), "application/json")
+            except PermissionError as exc:
+                return self.send(403, json.dumps({"error": str(exc)}), "application/json")
+            except ValueError as exc:
+                return self.send(400, json.dumps({"error": str(exc)}), "application/json")
+        if u.path == "/api/auth/logout":
+            authorization = self.headers.get("Authorization", "")
+            if authorization.startswith("Bearer "):
+                AUTH.revoke(authorization[7:].strip())
+            return self.send(200, '{"ok":true}', "application/json")
         if u.path == "/api/notifications/fcm/register":
             try:
                 out = fcm_notifications.register_device(raw_body.get("token"))
