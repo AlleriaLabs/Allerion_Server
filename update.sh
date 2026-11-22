@@ -8,6 +8,8 @@ docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is required.
 BRANCH="$(git -c safe.directory="$APP_DIR" branch --show-current)"
 [[ "$BRANCH" == "main" ]] || { echo "Refusing update from branch $BRANCH; use main." >&2; exit 1; }
 bash ./backup.sh
+# Normalize script modes changed by older installer revisions before checking out updates.
+chmod 644 install.sh backup.sh update.sh configure.sh uninstall.sh 2>/dev/null || true
 git -c safe.directory="$APP_DIR" fetch origin main
 git -c safe.directory="$APP_DIR" merge --ff-only origin/main
 # Pull before recreating so a failed download leaves the currently running container untouched.
