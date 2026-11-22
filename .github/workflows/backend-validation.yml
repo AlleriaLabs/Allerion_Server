@@ -27,9 +27,21 @@ jobs:
 
       - name: Check Python and shell syntax
         run: |
-          python -m py_compile server_monitor.py auth_manager.py
+          python -m py_compile server_monitor.py auth_manager.py jellyfin_analytics.py
           python -m unittest discover -s tests -v
           bash -n install.sh backup.sh update.sh configure.sh uninstall.sh
+
+      - name: Validate browser console JavaScript syntax
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          html = Path("console.html").read_text()
+          match = re.search(r"<script>([\\s\\S]*?)</script>", html)
+          assert match, "console script block not found"
+          Path("/tmp/allerion-console.js").write_text(match.group(1))
+          PY
+          node --check /tmp/allerion-console.js
 
       - name: Validate Docker Compose configuration
         run: docker compose config --quiet
