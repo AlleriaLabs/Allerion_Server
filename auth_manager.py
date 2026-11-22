@@ -142,3 +142,13 @@ class AuthManager:
         with self._connect() as db:
             rows = db.execute("SELECT id,username,role,created_at,disabled FROM users ORDER BY id").fetchall()
         return {"users": [dict(row) for row in rows]}
+
+
+    def revoke(self, token):
+        """Revoke a bearer session immediately (logout)."""
+        if not token:
+            return False
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        with self._connect() as db:
+            cur = db.execute("DELETE FROM sessions WHERE token_hash=?", (digest,))
+        return cur.rowcount > 0
