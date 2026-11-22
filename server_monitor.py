@@ -988,6 +988,11 @@ def container_inventory():
             "image": (row.get("Image") or "")[:160],
             "state": row.get("State", "unknown"),
             "status": (row.get("Status") or "")[:120],
+            "ports": [
+                {"private_port": p.get("PrivatePort"), "public_port": p.get("PublicPort"),
+                 "type": p.get("Type", "tcp")}
+                for p in (row.get("Ports") or [])[:30]
+            ],
             "created": row.get("Created"),
             "labels": {k: v for k, v in (row.get("Labels") or {}).items()
                        if k.startswith("com.docker.compose.") and len(k) < 100},
@@ -1672,6 +1677,7 @@ def integration_status():
         "jellyfin": {"name": "jellyfin", "configured": False, "enabled": False, "source": "docker"},
         "jfa-go": {"name": "jfa-go", "configured": False, "enabled": False, "source": "docker"},
         "seerr": {"name": "seerr", "configured": False, "enabled": False, "source": "docker"},
+        "adguard": {"name": "adguard", "configured": False, "enabled": False, "source": "docker"},
     }
     try:
         containers = container_inventory().get("items", [])
@@ -1683,15 +1689,27 @@ def integration_status():
                 "jellyfin": ("jellyfin",),
                 "jfa-go": ("jfa-go", "jfago", "jfa_go"),
                 "seerr": ("seerr", "jellyseerr"),
+                "adguard": ("adguardhome", "adguard-home", "adguard"),
             }
             for integration, terms in aliases.items():
                 if any(term in identity for term in terms):
                     detected[integration]["configured"] = True
                     detected[integration]["enabled"] = detected[integration]["enabled"] or running
-                    detected[integration].setdefault("containers", []).append({
+                    details = {
                         "name": container.get("name", ""),
                         "state": state,
-                    })
+                    }
+                    if integration == "adguard":
+                        ports = container.get("ports") or []
+                        web_ports = [p for p in ports if p.get("public_port") and p.get("type") == "tcp"
+                                     and p.get("private_port") in (3000, 80, 8080)]
+                        preferred = next((p for p in web_ports if p.get("private_port") == 3000),
+                                         next((p for p in web_ports if p.get("private_port") == 80),
+                                              web_ports[0] if web_ports else None))
+                        details["web_port"] = preferred.get("public_port") if preferred else None
+                        details["web_private_port"] = preferred.get("private_port") if preferred else None
+                        details["ports"] = ports
+                    detected[integration].setdefault("containers", []).append(details)
     except Exception as exc:
         # Preserve existing notification integrations even when Docker is unavailable.
         print("[integrations] Docker discovery unavailable: " + exc.__class__.__name__, flush=True)
