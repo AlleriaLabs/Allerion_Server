@@ -19,11 +19,17 @@ Python backend for the Allerion home/server monitoring Android app.
 
 Back up and preserve the `data/` directory on the server. This repository intentionally excludes runtime energy history and saved power configuration.
 
+## Account sign-in
+- New Android clients can use individual Allerion usernames and passwords. Passwords are stored as PBKDF2-HMAC-SHA256 hashes; the server never stores the raw password.
+- On the first connection, the first administrator account is created using the existing `.env` `TOKEN` once as a bootstrap credential. Choose a username and a password of at least 12 characters.
+- After setup, users sign in with their own credentials. The administrator can create additional accounts from the Server Workspace account panel.
+- Password accounts and hashed bearer-session records are stored in `data/auth.sqlite3`; preserve and back up the existing `data/` directory.
+- Existing `X-Token` clients remain supported during migration. New Android clients store expiring bearer sessions in Android Keystore-backed encrypted storage.
+
 ## Security
-- All `/api/*` routes require the `X-Token` header.
+- Keep `.env`, account database backups and power-device credentials private.
 - Do not expose port 8081 or the Docker socket proxy to the public internet.
 - Docker access is through a loopback-only proxy with write operations disabled.
-- Keep `.env` and power-device credentials private.
-- Use HTTPS/reverse proxy for access outside a trusted LAN.
+- The current backend listener is HTTP. Password sign-in must be limited to a trusted private LAN until HTTPS/reverse proxy is configured. Never send account passwords over an untrusted network.
 
 See [API_V2.md](API_V2.md) and [POWER_SETUP.md](POWER_SETUP.md) for endpoint and deployment details.
