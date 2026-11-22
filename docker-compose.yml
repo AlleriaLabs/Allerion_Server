@@ -27,7 +27,7 @@ services:
       - docker-socket-proxy
     environment:
       TOKEN: ${TOKEN:?Installer must generate TOKEN in .env}
-      LEGACY_TOKEN_AUTH: ${LEGACY_TOKEN_AUTH:-false}
+      LEGACY_TOKEN_AUTH: ${LEGACY_TOKEN_AUTH:-true}
       PORT: ${PORT:-8081}
       SPEEDTEST_MINUTES: "30"
       TZ: ${TZ:-Asia/Manila}
