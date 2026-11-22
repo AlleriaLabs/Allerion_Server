@@ -3,7 +3,7 @@ set -Eeuo pipefail
 REPO="https://github.com/AlleriaLabs/Allerion_Server.git"
 APP_DIR="${APP_DIR:-}"
 if [[ -z "$APP_DIR" ]]; then
-  if [[ -d /DATA/AppData/Allerion_Server ]]; then APP_DIR="/DATA/AppData/Allerion_Server"; else APP_DIR="/opt/allerion"; fi
+  if [[ -d /DATA/AppData ]]; then APP_DIR="/DATA/AppData/Allerion_Server"; else APP_DIR="/opt/allerion"; fi
 fi
 fail(){ echo "[Allerion] ERROR: $*" >&2; exit 1; }
 [[ "$(uname -s)" == "Linux" ]] || fail "Linux hosts only."
@@ -22,6 +22,7 @@ else
   git clone --branch main --depth 1 "$REPO" "$APP_DIR"
 fi
 cd "$APP_DIR"
+chmod 700 install.sh backup.sh update.sh 2>/dev/null || true
 mkdir -p data secrets backups
 chmod 700 secrets data
 if [[ ! -f .env ]]; then
