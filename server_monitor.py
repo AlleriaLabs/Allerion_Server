@@ -1700,20 +1700,26 @@ def integration_status():
                 if any(term in identity for term in terms):
                     detected[integration]["configured"] = True
                     detected[integration]["enabled"] = detected[integration]["enabled"] or running
+                    ports = container.get("ports") or []
                     details = {
                         "name": container.get("name", ""),
                         "state": state,
+                        "ports": ports,
                     }
-                    if integration == "adguard":
-                        ports = container.get("ports") or []
-                        web_ports = [p for p in ports if p.get("public_port") and p.get("type") == "tcp"
-                                     and p.get("private_port") in (3000, 80, 8080)]
-                        preferred = next((p for p in web_ports if p.get("private_port") == 3000),
-                                         next((p for p in web_ports if p.get("private_port") == 80),
-                                              web_ports[0] if web_ports else None))
-                        details["web_port"] = preferred.get("public_port") if preferred else None
-                        details["web_private_port"] = preferred.get("private_port") if preferred else None
-                        details["ports"] = ports
+                    # Publish only a detected host port; never guess a URL or expose
+                    # container-internal ports that are not reachable from the browser.
+                    preferred_ports = {
+                        "jellyfin": (8096, 8920),
+                        "jfa-go": (8056,),
+                        "seerr": (5055,),
+                        "adguard": (3000, 80, 8080),
+                    }.get(integration, ())
+                    web_ports = [p for p in ports if p.get("public_port") and p.get("type") == "tcp"
+                                 and p.get("private_port") in preferred_ports]
+                    preferred = next((p for internal in preferred_ports for p in web_ports
+                                      if p.get("private_port") == internal), None)
+                    details["web_port"] = preferred.get("public_port") if preferred else None
+                    details["web_private_port"] = preferred.get("private_port") if preferred else None
                     detected[integration].setdefault("containers", []).append(details)
     except Exception as exc:
         # Preserve existing notification integrations even when Docker is unavailable.
