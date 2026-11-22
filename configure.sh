@@ -18,7 +18,7 @@ updated = False
 for line in lines:
     if line.startswith(key):
         if not updated:
-            out.append(key + value)
+            out.append(key + "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'")
             updated = True
     else:
         out.append(line)
