@@ -24,20 +24,20 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Check Python syntax
+      - name: Check Python and shell syntax
         run: |
           python -m py_compile server_monitor.py auth_manager.py
           python -m unittest discover -s tests -v
-          bash -n install.sh backup.sh update.sh
+          bash -n install.sh backup.sh update.sh configure.sh uninstall.sh
 
       - name: Validate Docker Compose configuration
         run: docker compose config --quiet
 
-      - name: Build backend image
+      - name: Build backend image for integration tests
         run: docker build --tag allerion-server:ci .
 
       - name: Start backend and Docker socket proxy
-        run: docker compose up -d
+        run: ALLERION_IMAGE=allerion-server:ci docker compose up -d
 
       - name: Wait for backend health endpoint
         run: |
