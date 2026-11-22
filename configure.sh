@@ -18,12 +18,12 @@ updated = False
 for line in lines:
     if line.startswith(key):
         if not updated:
-            out.append(key + "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'")
+            out.append(key + "'" + value.replace("'", "\\'") + "'")
             updated = True
     else:
         out.append(line)
 if not updated:
-    out.append(key + value)
+    out.append(key + "'" + value.replace("'", "\\'") + "'")
 path.write_text("\n".join(out) + "\n")
 os.chmod(path, 0o600)
 ' "$key"
