@@ -134,6 +134,17 @@ def report(period="week", metric="users"):
           FROM samples WHERE ts>=? GROUP BY user_id,user_name ORDER BY watch_minutes DESC,plays DESC LIMIT 20""",(INTERVAL,since))]
         total=db.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
         first=db.execute("SELECT MIN(ts) FROM samples").fetchone()[0]
+        recent_since = now - max(INTERVAL * 3, 180)
+        latest_sessions = db.execute("""SELECT s.* FROM samples s
+          JOIN (SELECT session_id,MAX(id) id FROM samples
+                WHERE ts>=? GROUP BY session_id) latest ON latest.id=s.id
+          ORDER BY s.ts DESC LIMIT 100""", (recent_since,)).fetchall()
+    active_sessions = [{
+      "user": r["user_name"], "state": r["state"], "paused": bool(r["paused"]),
+      "item": r["item_name"], "series": r["series_name"], "device": r["device"],
+      "client": r["client"], "last_seen": r["ts"]
+    } for r in latest_sessions]
     return {"configured":True,"period":period,"interval_seconds":INTERVAL,"data_points":points,
-      "movies":movies,"users":users,"sample_count":total,"first_sample":first,
-      "note":"Estimated watch time from periodic session samples; historical data starts when collection is enabled."}
+      "movies":movies,"users":users,"active_sessions":active_sessions,
+      "active_session_count":len(active_sessions),"sample_count":total,"first_sample":first,
+      "note":"Session presence is based on the latest collector sample within three polling intervals; watch time is estimated from periodic samples."}
