@@ -25,7 +25,8 @@ jobs:
           python-version: '3.12'
 
       - name: Check Python syntax
-        run: python -m py_compile server_monitor.py auth_manager.py
+        run: |
+          python -m py_compile server_monitor.py auth_manager.py
           python -m unittest discover -s tests -v
 
       - name: Validate Docker Compose configuration
