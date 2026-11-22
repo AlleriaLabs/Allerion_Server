@@ -19,7 +19,7 @@ Install Docker Engine and Docker Compose v2 first. Then run this single command 
 
 The installer automatically:
 - detects supported CPU architecture;
-- downloads the published multi-architecture container image from GHCR;
+- downloads the published multi-architecture container image from GHCR (or builds from the public source checkout if the image is unavailable);
 - creates private `.env`, `data/`, `secrets/` and `backups/` directories;
 - generates a random first-admin setup token;
 - starts the service and checks its health.
@@ -49,7 +49,7 @@ From the installation directory:
 
     sudo bash update.sh
 
-The updater creates a private backup, fast-forwards the Git checkout, pulls the published image for the host architecture, and recreates the service. It does not delete persistent data or volumes.
+The updater creates a private backup, fast-forwards the Git checkout, pulls the published image for the host architecture (falling back to a local source build if the image cannot be pulled), and recreates the service. It does not delete persistent data or volumes.
 
 ## Backup and restore
 
