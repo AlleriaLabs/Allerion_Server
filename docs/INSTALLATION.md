@@ -19,7 +19,7 @@ Install Docker Engine, Docker Compose v2, Git and OpenSSL first. Then run:
 
 Optional custom directory:
 
-    APP_DIR=/srv/allerion sudo -E bash install.sh
+    curl -fsSL https://raw.githubusercontent.com/AlleriaLabs/Allerion_Server/main/install.sh | sudo env APP_DIR=/srv/allerion bash -s
 
 The installer detects x86_64/ARM64, creates private state directories, generates a random one-time setup credential, builds the service and checks health. It preserves an existing .env, data/ and secrets/. If the target directory contains unrelated files, it stops rather than overwriting them.
 
@@ -37,8 +37,8 @@ Open the Android app, add a server using http://SERVER-IP:8081, and create the f
 
 From the installation directory:
 
-    ./backup.sh
-    ./update.sh
+    bash backup.sh
+    bash update.sh
 
 Backups include .env, data/, secrets/ and the Compose file. Keep backup archives private. The updater creates a backup before fast-forwarding the main branch and rebuilding. It never runs docker compose down -v and never removes persistent data.
 
