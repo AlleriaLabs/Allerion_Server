@@ -30,6 +30,9 @@ PING_TARGET = ("1.1.1.1", 443)
 # --- power settings (all optional) ---
 DATA_DIR = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 AUTH = auth_manager.AuthManager(DATA_DIR)
+LEGACY_TOKEN_AUTH = os.environ.get('LEGACY_TOKEN_AUTH', 'true').strip().lower() in ('1', 'true', 'yes', 'on')
+_AUTH_LOGIN_FAILURES = {}
+_AUTH_LOGIN_LOCK = threading.Lock()
 BASE_WATTS = float(os.environ.get("BASE_WATTS", 0))   # extra draw the CPU reading cannot see (board, drives, fans)
 PRICE = float(os.environ.get("PRICE_PER_KWH", 0))
 CURRENCY = os.environ.get("CURRENCY", "")
@@ -1884,7 +1887,9 @@ class Handler(BaseHTTPRequestHandler):
             self.auth_user = AUTH.authenticate(authorization[7:].strip())
             return self.auth_user is not None
         given = self.headers.get("X-Token", "")
-        if TOKEN and hmac.compare_digest(given, TOKEN):
+        # Preserve existing installations by default. New installs disable this
+        # after first-admin setup; TOKEN remains valid for setup only.
+        if LEGACY_TOKEN_AUTH and TOKEN and hmac.compare_digest(given, TOKEN):
             self.auth_user = {"id": 0, "username": "legacy-token", "role": "admin"}
             return True
         self.auth_user = None
@@ -2008,10 +2013,22 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self.send(400, json.dumps({"error": str(exc)}), "application/json")
         if u.path == "/api/auth/login":
+            client_ip = self.client_address[0] if self.client_address else "unknown"
+            now = time.time()
+            with _AUTH_LOGIN_LOCK:
+                attempts = [stamp for stamp in _AUTH_LOGIN_FAILURES.get(client_ip, []) if now - stamp < 900]
+                if len(attempts) >= 10:
+                    _AUTH_LOGIN_FAILURES[client_ip] = attempts
+                    return self.send(429, '{"error":"Too many sign-in attempts. Try again in 15 minutes."}', "application/json")
             try:
                 result = AUTH.login(raw_body.get("username"), raw_body.get("password"))
+                with _AUTH_LOGIN_LOCK:
+                    _AUTH_LOGIN_FAILURES.pop(client_ip, None)
                 return self.send(200, json.dumps(result), "application/json")
             except PermissionError:
+                with _AUTH_LOGIN_LOCK:
+                    attempts.append(now)
+                    _AUTH_LOGIN_FAILURES[client_ip] = attempts
                 return self.send(401, '{"error":"Invalid username or password"}', "application/json")
             except ValueError as exc:
                 return self.send(400, json.dumps({"error": str(exc)}), "application/json")
@@ -2028,8 +2045,9 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self.send(400, json.dumps({"error": str(exc)}), "application/json")
         if u.path == "/api/auth/logout":
-            # Sessions naturally expire after 30 days. Client-side logout drops
-            # the bearer token; no secret is ever returned in the response.
+            authorization = self.headers.get("Authorization", "")
+            if authorization.startswith("Bearer "):
+                AUTH.revoke(authorization[7:].strip())
             return self.send(200, '{"ok":true}', "application/json")
         if u.path == "/api/notifications/fcm/register":
             try:
